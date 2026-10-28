@@ -9,6 +9,7 @@ from backend.app.modules.analysis import (
     analyze_firmware_bytes,
     persist_analysis_record,
     save_upload_safely,
+    cleanup_file,
     ValidationError,
 )
 from backend.app.schemas.firmware import FirmwareUploadResponse
@@ -27,24 +28,21 @@ async def analyze_firmware(
     """
     Performs complete offline analysis on an uploaded ESP32 firmware binary.
     Validates file format, extracts binary metadata, pulls printable strings,
-    detects potential secrets, and returns sanitized, evidence-backed findings.
+    detects potential secrets, calculates risk score, and returns sanitized results.
     """
     filename = file.filename or "firmware.bin"
 
     try:
-        # Read file contents in memory with size bound
         contents = await file.read()
     except Exception as e:
-        logger.error(f"Error reading uploaded file: {e}")
+        logger.error(f"Error reading uploaded file payload: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Failed to read uploaded file payload.",
         )
 
     try:
-        # Execute analysis engine
         result = analyze_firmware_bytes(contents, original_filename=filename)
-        # Persist assessment and sanitized findings
         persist_analysis_record(db, result)
         return result
     except ValidationError as ve:
@@ -53,10 +51,10 @@ async def analyze_firmware(
             detail=str(ve),
         )
     except Exception as e:
-        logger.error(f"Analysis failure on {filename}: {e}", exc_info=True)
+        logger.error(f"Analysis failure on {filename}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An error occurred during firmware analysis: {str(e)}",
+            detail="An unexpected error occurred during firmware analysis. Please check file format.",
         )
 
 
@@ -80,6 +78,7 @@ async def upload_firmware(
             detail="Failed to read uploaded file payload.",
         )
 
+    saved_path = None
     try:
         saved_path, assessment_id = save_upload_safely(contents, original_filename=filename)
         from backend.app.utils.crypto import compute_bytes_hashes
@@ -113,21 +112,25 @@ async def upload_firmware(
             created_at=record.created_at,
         )
     except ValidationError as ve:
+        if saved_path:
+            cleanup_file(saved_path)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(ve),
         )
     except Exception as e:
+        if saved_path:
+            cleanup_file(saved_path)
         logger.error(f"Upload error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process firmware upload: {str(e)}",
+            detail="Failed to process firmware upload.",
         )
 
 
 @router.get("/{assessment_id}", status_code=status.HTTP_200_OK)
 def get_assessment(assessment_id: str, db: Session = Depends(get_db)):
-    """Retrieves stored assessment record and associated findings."""
+    """Retrieves stored assessment record and associated sanitized findings."""
     assessment = db.query(AssessmentRecord).filter(AssessmentRecord.id == assessment_id).first()
     if not assessment:
         raise HTTPException(
@@ -164,6 +167,7 @@ def get_assessment(assessment_id: str, db: Session = Depends(get_db)):
         "md5": assessment.md5,
         "image_type": assessment.image_type,
         "status": assessment.status,
+        "risk_score": assessment.risk_score,
         "risk_rating": assessment.risk_rating,
         "image_metadata": assessment.image_metadata,
         "findings_count": len(findings),

@@ -9,6 +9,7 @@ from backend.app.modules.analysis.validator import validate_file_size
 from backend.app.modules.analysis.esp_parser import parse_esp_binary
 from backend.app.modules.analysis.string_extractor import extract_strings_with_offsets, categorize_strings
 from backend.app.modules.analysis.secret_scanner import scan_for_secrets
+from backend.app.modules.analysis.risk_scorer import calculate_risk_score
 from backend.app.models.assessment import AssessmentRecord
 from backend.app.models.finding import FindingRecord
 
@@ -22,7 +23,7 @@ def analyze_firmware_bytes(
     Executes a complete, offline, hardware-independent firmware assessment.
     Returns structured results including metadata, hashes, strings, and sanitized findings.
     """
-    # 1. Validation
+    # 1. Input Validation
     validate_file_size(len(file_bytes))
 
     if not assessment_id:
@@ -30,13 +31,13 @@ def analyze_firmware_bytes(
 
     created_at = datetime.now(timezone.utc)
 
-    # 2. Hashing (derived from actual bytes)
+    # 2. Hashing (derived dynamically from actual bytes)
     sha256, md5 = compute_bytes_hashes(file_bytes)
 
     # 3. Binary parsing & metadata extraction
     parsed_metadata = parse_esp_binary(file_bytes)
 
-    # 4. Printable string extraction & categorization
+    # 4. Printable string extraction & categorization (sanitized)
     extracted_strings, string_meta = extract_strings_with_offsets(file_bytes, min_length=4, max_strings=5000)
     categorized_strings = categorize_strings(extracted_strings)
 
@@ -69,7 +70,10 @@ def analyze_firmware_bytes(
                 "is_potential": True,
             })
 
-    # 6. Summary aggregation
+    # 6. Explainable Risk Score calculation
+    risk_score, risk_rating, score_breakdown = calculate_risk_score(findings)
+
+    # 7. Summary aggregation
     summary = {
         "critical": sum(1 for f in findings if f["severity"] == "Critical"),
         "high": sum(1 for f in findings if f["severity"] == "High"),
@@ -78,16 +82,6 @@ def analyze_firmware_bytes(
         "informational": sum(1 for f in findings if f["severity"] == "Informational"),
         "total_unique": len(findings),
     }
-
-    # Preliminary risk rating heuristic for Phase 2
-    if summary["critical"] > 0 or summary["high"] >= 2:
-        risk_rating = "High"
-    elif summary["high"] > 0 or summary["medium"] >= 2:
-        risk_rating = "Moderate"
-    elif summary["medium"] > 0 or summary["low"] > 0:
-        risk_rating = "Low"
-    else:
-        risk_rating = "Clean"
 
     completed_at = datetime.now(timezone.utc)
 
@@ -104,7 +98,9 @@ def analyze_firmware_bytes(
         "strings_summary": string_meta,
         "categorized_strings": categorized_strings,
         "findings_summary": summary,
+        "risk_score": risk_score,
         "risk_rating": risk_rating,
+        "score_breakdown": score_breakdown,
         "findings": findings,
         "status": "COMPLETED",
         "created_at": created_at.isoformat(),
@@ -114,7 +110,7 @@ def analyze_firmware_bytes(
 
 def persist_analysis_record(db: Session, analysis_result: Dict[str, Any]) -> AssessmentRecord:
     """
-    Persists the assessment record and sanitized findings to SQLite.
+    Persists the assessment record and sanitized findings to SQLite using an isolated transaction.
     Never stores unredacted sensitive values.
     """
     assessment = AssessmentRecord(
@@ -125,8 +121,8 @@ def persist_analysis_record(db: Session, analysis_result: Dict[str, Any]) -> Ass
         md5=analysis_result["md5"],
         image_type=analysis_result["image_type"],
         status=analysis_result["status"],
-        risk_score=0,  # Full risk scoring calculation implemented in Phase 4
-        risk_rating=analysis_result["risk_rating"],
+        risk_score=analysis_result.get("risk_score", 0),
+        risk_rating=analysis_result.get("risk_rating", "Clean"),
         image_metadata=analysis_result["image_metadata"],
         created_at=datetime.fromisoformat(analysis_result["created_at"]),
         completed_at=datetime.fromisoformat(analysis_result["completed_at"]),

@@ -275,7 +275,8 @@ def test_analyze_firmware_bytes_engine():
     assert result["sha256"] == hashlib.sha256(esp_bin).hexdigest()
     assert result["md5"] == hashlib.md5(esp_bin).hexdigest()
     assert result["findings_summary"]["total_unique"] > 0
-    assert result["risk_rating"] in ["Moderate", "High", "Critical"]
+    assert result["risk_score"] == 17
+    assert result["risk_rating"] == "Low"
 
 
 def test_api_firmware_analyze_endpoint(client: TestClient):

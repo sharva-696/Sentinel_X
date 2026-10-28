@@ -16,10 +16,36 @@ def mask_secret(value: str, prefix_len: int = 4, suffix_len: int = 2) -> str:
 
 def mask_wifi_credential(text: str) -> str:
     """
-    Masks password or passphrase in Wi-Fi connection strings.
-    Example: 'wifi_password = "super_secret_pass"' -> 'wifi_password = "**************"'
+    Masks password or passphrase in Wi-Fi connection strings across all ESP-IDF variants.
+    Matches: wifi_password, wifi_pass, wpa_passphrase, psk, wifi_sta_pwd, sta_pwd, ap_pwd, wifi_key.
+    Example: 'wifi_sta_pwd = "super_secret_pass"' -> 'wifi_sta_pwd = "*****************"'
     """
-    pattern = r"(?i)(wifi_password|wifi_pass|wpa_passphrase|psk)\s*([:=])\s*([\"']?)([^\s\"';,]+)([\"']?)"
+    pattern = (
+        r"(?i)(wifi_password|wifi_pass|wpa_passphrase|psk|wifi_sta_pwd|sta_pwd|ap_pwd|wifi_key)"
+        r"\s*([:=])\s*([\"']?)([^\s\"';,]+)([\"']?)"
+    )
+
+    def repl(m):
+        key = m.group(1)
+        sep = m.group(2)
+        quote_start = m.group(3)
+        val = m.group(4)
+        quote_end = m.group(5)
+        masked_val = "*" * len(val)
+        return f"{key} {sep} {quote_start}{masked_val}{quote_end}"
+
+    return re.sub(pattern, repl, text)
+
+
+def mask_generic_credentials(text: str) -> str:
+    """
+    Masks common password, token, or secret assignments in configuration strings.
+    Example: 'password = "secret123"' -> 'password = "*********"'
+    """
+    pattern = (
+        r"(?i)\b(password|passwd|secret_key|api_secret|client_secret)\b"
+        r"\s*([:=])\s*([\"']?)([^\s\"';,]+)([\"']?)"
+    )
 
     def repl(m):
         key = m.group(1)
@@ -63,18 +89,19 @@ def mask_url_credentials(url: str) -> str:
 
 def sanitize_evidence(evidence: str) -> str:
     """
-    Runs multi-pass redaction to ensure evidence snippets in findings/reports
-    do not leak raw sensitive material.
+    Runs multi-pass redaction to ensure evidence snippets in findings, logs, and reports
+    never expose raw sensitive material.
     """
     sanitized = mask_private_key(evidence)
     sanitized = mask_wifi_credential(sanitized)
+    sanitized = mask_generic_credentials(sanitized)
     sanitized = mask_url_credentials(sanitized)
 
     # AWS Key ID mask
     sanitized = re.sub(r"\b(AKIA[0-9A-Z]{16})\b", lambda m: mask_secret(m.group(1), 4, 2), sanitized)
 
     # GitHub token mask
-    sanitized = re.sub(r"\b(gh[pousr]_[0-9a-zA-Z]{36})\b", lambda m: mask_secret(m.group(1), 4, 2), sanitized)
+    sanitized = re.sub(r"\b(gh[pousr]_[0-9a-zA-Z]{36}|github_pat_[0-9a-zA-Z_]{22,})\b", lambda m: mask_secret(m.group(1), 4, 2), sanitized)
 
     # Generic Bearer tokens
     sanitized = re.sub(

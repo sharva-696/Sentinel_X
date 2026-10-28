@@ -86,7 +86,7 @@ def classify_memory_section(load_addr: int) -> str:
 
 def parse_partition_table_bytes(data: bytes, offset_in_file: int = 0) -> List[Dict[str, Any]]:
     """
-    Parses a sequence of 32-byte partition table entries.
+    Parses a sequence of 32-byte partition table entries with strict validation.
     """
     partitions = []
     entry_size = 32
@@ -101,7 +101,7 @@ def parse_partition_table_bytes(data: bytes, offset_in_file: int = 0) -> List[Di
         magic = struct.unpack("<H", chunk[0:2])[0]
 
         if magic == PARTITION_TABLE_MD5_MAGIC:
-            # MD5 checksum entry
+            # MD5 checksum entry marks end of valid table
             break
         if magic != PARTITION_TABLE_MAGIC:
             # Reached end of partition table or uninitialized space
@@ -109,10 +109,20 @@ def parse_partition_table_bytes(data: bytes, offset_in_file: int = 0) -> List[Di
 
         part_type = chunk[2]
         part_subtype = chunk[3]
+
+        # Valid partition types must be app (0x00), data (0x01), or custom (>= 0x40)
+        if part_type not in [0x00, 0x01] and part_type < 0x40:
+            break
+
         part_offset = struct.unpack("<I", chunk[4:8])[0]
         part_size = struct.unpack("<I", chunk[8:12])[0]
+
+        # Partition size must be non-zero
+        if part_size == 0:
+            break
+
         raw_label = chunk[12:28]
-        label = raw_label.split(b"\x00")[0].decode("ascii", errors="replace")
+        label = raw_label.split(b"\x00")[0].decode("ascii", errors="replace").strip()
         flags = struct.unpack("<I", chunk[28:32])[0]
 
         type_str = PARTITION_TYPES.get(part_type, f"0x{part_type:02x}")
@@ -120,7 +130,7 @@ def parse_partition_table_bytes(data: bytes, offset_in_file: int = 0) -> List[Di
 
         partitions.append({
             "index": i,
-            "label": label,
+            "label": label or f"partition_{i}",
             "type": type_str,
             "subtype": subtype_str,
             "offset": f"0x{part_offset:08x}",
@@ -135,35 +145,36 @@ def parse_partition_table_bytes(data: bytes, offset_in_file: int = 0) -> List[Di
 
 def detect_image_type(data: bytes) -> str:
     """
-    Identifies the profile of the uploaded firmware binary.
+    Identifies the profile of the uploaded firmware binary using multi-factor evidence.
+    Classifications:
+    - PARTITION_TABLE: Small binary (<= 4KB) starting with 0xAA50 and valid partition entries.
+    - FULL_FLASH_DUMP: >= 1MB, bootloader magic at 0x1000/0x0000, valid partition table at 0x8000/0x9000,
+                       and offset 0 is NOT an app binary.
+    - BOOTLOADER_BINARY: Begins with 0xE9, <= 64KB, all segments IRAM/DRAM, entry in IRAM.
+    - APP_BINARY: Begins with 0xE9 and has DROM/IROM flash segments, or size > 64KB with 0xE9.
+    - RAW_BINARY: Any file lacking sufficient structural proof.
     """
     size = len(data)
+    if size < 24:
+        return "RAW_BINARY"
 
-    # 1. Check for Partition Table (typical size <= 0x1000 and magic 0xAA50 at offset 0)
-    if size <= 0x1000 and len(data) >= 32:
-        if struct.unpack("<H", data[0:2])[0] == PARTITION_TABLE_MAGIC:
+    # 1. Check for Partition Table (size <= 4KB and valid partition entries starting at offset 0)
+    if size <= 0x1000 and struct.unpack("<H", data[0:2])[0] == PARTITION_TABLE_MAGIC:
+        parts = parse_partition_table_bytes(data, 0)
+        if parts:
             return "PARTITION_TABLE"
 
-    # 2. Check for Full Flash Dump
-    # Standard sizes: 2MB, 4MB, 8MB, 16MB, 32MB
-    # Look for partition table at offset 0x8000 or 0x9000
-    if size >= 1024 * 1024:
-        for pt_offset in [0x8000, 0x9000]:
-            if size > pt_offset + 32:
-                if struct.unpack("<H", data[pt_offset : pt_offset + 2])[0] == PARTITION_TABLE_MAGIC:
-                    return "FULL_FLASH_DUMP"
+    # 2. Check for App Binary at offset 0
+    starts_with_esp_magic = (data[0] == ESP_IMAGE_MAGIC)
+    has_flash_mapped_segment = False
 
-    # 3. Check for ESP Image Magic at offset 0
-    if size >= 24 and data[0] == ESP_IMAGE_MAGIC:
+    if starts_with_esp_magic:
         seg_count = data[1]
-        has_flash_mapped_segment = False
-
-        # Scan available segment headers to see if any segment is mapped to DROM or IROM
         seg_offset = 24
+        # Inspect up to first 16 segments safely
         for _ in range(min(seg_count, 16)):
             if seg_offset + 8 <= size:
                 load_addr, seg_len = struct.unpack("<II", data[seg_offset : seg_offset + 8])
-                # Check if mapped to flash DROM or IROM
                 if (0x3F400000 <= load_addr < 0x3F800000) or (0x400D0000 <= load_addr < 0x44000000):
                     has_flash_mapped_segment = True
                     break
@@ -171,6 +182,28 @@ def detect_image_type(data: bytes) -> str:
             else:
                 break
 
+    # 3. Check for Full Flash Dump (requires multi-factor structural evidence)
+    if size >= 1024 * 1024 and not has_flash_mapped_segment:
+        # Check for bootloader magic at 0x1000 (ESP32) or 0x0000 (ESP32-S2/S3/C3)
+        has_bootloader = False
+        if size > 0x1000 and data[0x1000] == ESP_IMAGE_MAGIC:
+            has_bootloader = True
+        elif data[0] == ESP_IMAGE_MAGIC:
+            # S2/S3/C3 bootloader at 0x0000 with IRAM entry
+            entry_pt = struct.unpack("<I", data[4:8])[0]
+            if 0x40070000 <= entry_pt < 0x40090000 or 0x3F400000 <= entry_pt < 0x3F500000:
+                has_bootloader = True
+
+        if has_bootloader:
+            for pt_offset in [0x8000, 0x9000]:
+                if size > pt_offset + 32:
+                    if struct.unpack("<H", data[pt_offset : pt_offset + 2])[0] == PARTITION_TABLE_MAGIC:
+                        parts = parse_partition_table_bytes(data, pt_offset)
+                        if parts:
+                            return "FULL_FLASH_DUMP"
+
+    # 4. Check for ESP Image Header at offset 0
+    if starts_with_esp_magic:
         if has_flash_mapped_segment:
             return "APP_BINARY"
 
@@ -187,7 +220,7 @@ def detect_image_type(data: bytes) -> str:
 def parse_esp_binary(data: bytes) -> Dict[str, Any]:
     """
     Parses binary metadata without throwing unhandled exceptions.
-    Returns structured dictionary with metadata, segments, warnings, and parser status.
+    Guarantees out-of-bounds safety, returns structured metadata, segments, and warnings.
     """
     file_size = len(data)
     detected_type = detect_image_type(data)
@@ -249,6 +282,12 @@ def parse_esp_binary(data: bytes) -> Dict[str, Any]:
     segment_count = data[1]
     result["segments_count"] = segment_count
 
+    # Sanity check on segment count
+    if segment_count > 16:
+        result["warnings"].append(
+            f"Header claims an unusually large number of segments ({segment_count}). Parsing bounded to file limits."
+        )
+
     spi_mode_byte = data[2]
     result["spi_mode"] = FLASH_MODES.get(spi_mode_byte, f"Unknown (0x{spi_mode_byte:02x})")
 
@@ -274,12 +313,12 @@ def parse_esp_binary(data: bytes) -> Dict[str, Any]:
         if data[23] == 0x01:
             result["hash_appended"] = True
 
-    # Parse Segments
+    # Parse Segments with strict boundary protection
     offset = 24
     segments = []
     truncated = False
 
-    for s_idx in range(segment_count):
+    for s_idx in range(min(segment_count, 32)):
         if offset + 8 > file_size:
             result["warnings"].append(f"File truncated before segment {s_idx + 1} header at offset 0x{offset:06x}.")
             truncated = True
@@ -289,11 +328,11 @@ def parse_esp_binary(data: bytes) -> Dict[str, Any]:
         offset += 8
 
         if offset + data_len > file_size:
-            actual_available = file_size - offset
+            actual_available = max(0, file_size - offset)
             result["warnings"].append(
-                f"Segment {s_idx + 1} is truncated: expected {data_len} bytes, but only {actual_available} bytes remain."
+                f"Segment {s_idx + 1} is truncated: header specifies {data_len} bytes, but only {actual_available} bytes remain."
             )
-            data_len = max(0, actual_available)
+            data_len = actual_available
             truncated = True
 
         section_name = classify_memory_section(load_addr)
