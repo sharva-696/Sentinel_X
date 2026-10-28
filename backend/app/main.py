@@ -1,8 +1,9 @@
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from backend.app.config import settings
 from backend.app.database import init_db
 from backend.app.routers.health import router as health_router
@@ -40,6 +41,13 @@ app.include_router(firmware_router)
 app.include_router(device_router)
 app.include_router(assessment_router)
 
+
+# Friendly redirect for /dashboard without trailing slash
+@app.get("/dashboard", include_in_schema=False)
+def dashboard_redirect():
+    return RedirectResponse(url="/dashboard/", status_code=307)
+
+
 # Mount frontend static files
 frontend_dir = Path(__file__).resolve().parent.parent.parent / "frontend"
 if frontend_dir.is_dir():
@@ -47,7 +55,10 @@ if frontend_dir.is_dir():
 
 
 @app.get("/")
-def root():
+def root(request: Request):
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept and "application/json" not in accept:
+        return RedirectResponse(url="/dashboard/", status_code=307)
     return {
         "message": f"Welcome to {settings.app_name} API",
         "version": settings.app_version,
