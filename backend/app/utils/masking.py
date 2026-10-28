@@ -35,10 +35,22 @@ def mask_wifi_credential(text: str) -> str:
 
 def mask_private_key(text: str) -> str:
     """
-    Redacts private key bodies between PEM boundaries.
+    Redacts private key material when PEM boundaries are detected.
+    Handles both full certificate blocks and isolated header strings.
     """
-    pem_pattern = r"(-----BEGIN [A-Z ]*PRIVATE KEY-----)(.*?)(-----END [A-Z ]*PRIVATE KEY-----)"
-    return re.sub(pem_pattern, r"\1\n[REDACTED PRIVATE KEY MATERIAL]\n\3", text, flags=re.DOTALL)
+    if re.search(r"-----END [A-Z ]*PRIVATE KEY-----", text):
+        return re.sub(
+            r"(-----BEGIN [A-Z ]*PRIVATE KEY-----)(.*?)(-----END [A-Z ]*PRIVATE KEY-----)",
+            r"\1\n[REDACTED PRIVATE KEY MATERIAL]\n\3",
+            text,
+            flags=re.DOTALL,
+        )
+    return re.sub(
+        r"(-----BEGIN [A-Z ]*PRIVATE KEY-----).*",
+        r"\1\n[REDACTED PRIVATE KEY MATERIAL]",
+        text,
+        flags=re.DOTALL,
+    )
 
 
 def mask_url_credentials(url: str) -> str:
