@@ -288,3 +288,311 @@ def test_api_delete_assessment_lifecycle(client: TestClient):
 def test_api_delete_nonexistent_assessment_returns_404(client: TestClient):
     res = client.delete("/api/assessments/non-existent-uuid-12345")
     assert res.status_code == 404
+
+
+# =========================================================================
+# 5. Targeted Audits: Issues A, B, and C Verification
+# =========================================================================
+
+def test_distinct_secrets_same_placeholder_preserve_identity():
+    """
+    Issue A Safeguard:
+    Multiple distinct secrets that sanitize to the exact same placeholder must NOT
+    have identical fingerprints and must NOT be merged into a single finding.
+    Raw secrets must NEVER appear in fingerprints or finding objects.
+    """
+    secret1 = "SecretAlpha123!"
+    secret2 = "SecretBeta0012!"  # Same length (15 chars) so both sanitize to identical asterisks
+
+    raw1 = {
+        "rule_id": "SEC-WIFI-001",
+        "category": "Network Credentials",
+        "title": "Hardcoded Wi-Fi Password",
+        "severity": "High",
+        "confidence": "Medium",
+        "detection_method": "Wi-Fi Pattern",
+        "byte_offset": "0x001000",
+        "evidence": f'wifi_password = "{secret1}"',
+        "raw_occurrences": 1,
+    }
+    raw2 = {
+        "rule_id": "SEC-WIFI-001",
+        "category": "Network Credentials",
+        "title": "Hardcoded Wi-Fi Password",
+        "severity": "High",
+        "confidence": "Medium",
+        "detection_method": "Wi-Fi Pattern",
+        "byte_offset": "0x002000",
+        "evidence": f'wifi_password = "{secret2}"',
+        "raw_occurrences": 1,
+    }
+
+    n1 = normalize_finding(raw1, "assess-abc")
+    n2 = normalize_finding(raw2, "assess-abc")
+
+    # 1. Evidence is sanitized identically to the exact same placeholder string
+    assert n1.evidence_masked == n2.evidence_masked
+    assert n1.evidence_masked == 'wifi_password = "***************"'
+
+    # 2. But distinct secret identities produce distinct fingerprints
+    assert n1.fingerprint != n2.fingerprint
+
+    # 3. Neither fingerprint contains the raw secret text
+    assert secret1 not in n1.fingerprint
+    assert secret2 not in n2.fingerprint
+    assert secret1 not in n1.evidence_masked
+    assert secret2 not in n2.evidence_masked
+
+    # 4. Deduplication preserves both findings as separate records
+    deduped = deduplicate_findings([n1, n2])
+    assert len(deduped) == 2
+    offsets = {f.byte_offset for f in deduped}
+    assert offsets == {"0x001000", "0x002000"}
+
+
+def test_genuinely_equivalent_secrets_consolidate_offsets():
+    """
+    Issue A Safeguard:
+    Genuinely identical secrets repeated across offsets MUST be consolidated into
+    a single canonical finding with aggregated offsets.
+    """
+    same_secret = "IdenticalPass999!"
+
+    raw1 = {
+        "rule_id": "SEC-WIFI-001",
+        "category": "Network Credentials",
+        "title": "Wi-Fi Password",
+        "severity": "High",
+        "confidence": "Medium",
+        "detection_method": "Wi-Fi Pattern",
+        "byte_offset": "0x001000",
+        "evidence": f'wifi_password = "{same_secret}"',
+        "raw_occurrences": 1,
+    }
+    raw2 = {
+        "rule_id": "SEC-WIFI-001",
+        "category": "Network Credentials",
+        "title": "Wi-Fi Password",
+        "severity": "High",
+        "confidence": "Medium",
+        "detection_method": "Wi-Fi Pattern",
+        "byte_offset": "0x004500",
+        "evidence": f'wifi_password = "{same_secret}"',
+        "raw_occurrences": 1,
+    }
+
+    n1 = normalize_finding(raw1, "assess-abc")
+    n2 = normalize_finding(raw2, "assess-abc")
+
+    # Genuinely equivalent detections produce identical fingerprints
+    assert n1.fingerprint == n2.fingerprint
+
+    # Deduplication collapses them into 1 record and aggregates offsets
+    deduped = deduplicate_findings([n1, n2])
+    assert len(deduped) == 1
+    consolidated = deduped[0]
+    assert consolidated.byte_offset == "0x001000"
+    assert "0x004500" in consolidated.additional_offsets
+    assert consolidated.raw_occurrences == 2
+
+
+def test_confidence_not_elevated_by_duplicate_occurrences():
+    """
+    Issue A Safeguard:
+    Finding the same pattern at multiple offsets must NEVER artificially elevate confidence.
+    Confidence must remain tied solely to the detection rule's intrinsic certainty.
+    """
+    raw = {
+        "rule_id": "SEC-CFG-001",
+        "category": "Configuration Security",
+        "title": "Debug Log Pattern",
+        "severity": "Low",
+        "confidence": "Low",
+        "detection_method": "Regex",
+        "byte_offset": "0x001000",
+        "evidence_masked": "ESP_LOGD [REDACTED]",
+        "raw_occurrences": 1,
+    }
+    findings = [
+        normalize_finding({**raw, "byte_offset": f"0x{i:06x}"}, "assess-xyz")
+        for i in range(10)
+    ]
+
+    deduped = deduplicate_findings(findings)
+    assert len(deduped) == 1
+    # Confidence remains strictly LOW, not elevated
+    assert deduped[0].confidence == FindingConfidence.LOW
+    assert deduped[0].raw_occurrences == 10
+    assert len(deduped[0].additional_offsets) == 9
+
+
+def test_risk_scoring_meaningful_n_and_dampening_tradeoff():
+    """
+    Issue B Safeguard:
+    Verify that N represents occurrences of a specific finding across offsets,
+    dampening prevents score explosion on repeated duplicate offsets, and distinct
+    findings contribute independently to the score.
+    """
+    # 1. Single finding repeated at 10 offsets (N=10)
+    finding_10_offsets = {
+        "rule_id": "SEC-WIFI-001",
+        "title": "Wi-Fi Password",
+        "severity": "High",
+        "confidence": "Medium",
+        "raw_occurrences": 10,
+    }
+    score_single, rating_single, breakdown_single = calculate_risk_score([finding_10_offsets])
+    # Base weight (High) = 7, Conf (Medium) = 0.8
+    # N = 10 -> dampening multiplier = 1.0 + (0.2 * 5) = 2.0
+    # Expected points = 7 * 0.8 * 2.0 = 11.2 -> rounded to 11
+    assert score_single == 11
+    assert rating_single == "Low"
+    assert breakdown_single["capped_score"] == 11
+    assert breakdown_single["finding_breakdown"][0]["occurrences"] == 10
+    assert breakdown_single["finding_breakdown"][0]["multiplier"] == 2.0
+
+    # 2. Two distinct findings with 1 occurrence each (N=1 each)
+    distinct_finding_1 = {
+        "rule_id": "SEC-WIFI-001",
+        "title": "Wi-Fi Password Net1",
+        "severity": "High",
+        "confidence": "Medium",
+        "raw_occurrences": 1,
+    }
+    distinct_finding_2 = {
+        "rule_id": "SEC-WIFI-001",
+        "title": "Wi-Fi Password Net2",
+        "severity": "High",
+        "confidence": "Medium",
+        "raw_occurrences": 1,
+    }
+    score_two, rating_two, breakdown_two = calculate_risk_score([distinct_finding_1, distinct_finding_2])
+    # Each: 7 * 0.8 * 1.0 = 5.6 -> Total = 5.6 + 5.6 = 11.2 -> rounded to 11
+    assert score_two == 11
+    assert len(breakdown_two["finding_breakdown"]) == 2
+    assert breakdown_two["finding_breakdown"][0]["calculated_points"] == 5.6
+    assert breakdown_two["finding_breakdown"][1]["calculated_points"] == 5.6
+
+    # 3. Empty findings list producing exactly 0 score and "Clean" band
+    score_empty, rating_empty, breakdown_empty = calculate_risk_score([])
+    assert score_empty == 0
+    assert rating_empty == "Clean"
+    assert len(breakdown_empty["finding_breakdown"]) == 0
+
+
+def test_database_schema_upgrade_idempotent(db_session):
+    """
+    Issue C Safeguard:
+    upgrade_db_schema() must be safe and idempotent across repeated invocations.
+    """
+    from backend.app.database import upgrade_db_schema
+    # Running multiple times must succeed without throwing SQLite syntax or duplicate column errors
+    for _ in range(3):
+        upgrade_db_schema()
+
+
+def test_sqlite_cascading_deletion_enforced(db_session):
+    """
+    Issue C Safeguard:
+    Verify that SQLite foreign-key enforcement and cascading deletion remove
+    all associated findings when an AssessmentRecord is deleted.
+    """
+    assess_id = f"cascade-test-{uuid.uuid4().hex[:8]}"
+    assessment = AssessmentRecord(
+        id=assess_id,
+        filename="test_cascade.bin",
+        file_size_bytes=1024,
+        sha256="abc1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd",
+        md5="1234567890abcdef1234567890abcdef",
+        image_type="APP_BINARY",
+        status="COMPLETED",
+        risk_score=10,
+        risk_rating="Low",
+    )
+    db_session.add(assessment)
+    db_session.commit()
+
+    # Add 2 findings for this assessment
+    f1 = FindingRecord(
+        id=str(uuid.uuid4()),
+        assessment_id=assess_id,
+        rule_id="RULE-1",
+        title="Indicator 1",
+        category="General",
+        severity="Low",
+        confidence="Medium",
+        detection_method="Static",
+        evidence_masked="test evidence 1",
+        fingerprint=f"fp-1-{uuid.uuid4().hex}",
+    )
+    f2 = FindingRecord(
+        id=str(uuid.uuid4()),
+        assessment_id=assess_id,
+        rule_id="RULE-2",
+        title="Indicator 2",
+        category="General",
+        severity="Low",
+        confidence="Medium",
+        detection_method="Static",
+        evidence_masked="test evidence 2",
+        fingerprint=f"fp-2-{uuid.uuid4().hex}",
+    )
+    db_session.add_all([f1, f2])
+    db_session.commit()
+
+    # Verify findings exist in database
+    assert db_session.query(FindingRecord).filter(FindingRecord.assessment_id == assess_id).count() == 2
+
+    # Delete the parent assessment
+    db_session.delete(assessment)
+    db_session.commit()
+
+    # Verify cascading deletion removed both findings
+    remaining_findings = db_session.query(FindingRecord).filter(FindingRecord.assessment_id == assess_id).count()
+    assert remaining_findings == 0
+
+
+def test_api_delete_assessment_path_traversal_rejected(client: TestClient):
+    """
+    Issue C Safeguard:
+    Path traversal strings in assessment deletion must be rejected with HTTP 400 or 404,
+    and must never touch or delete files outside UPLOADS_DIR.
+    """
+    malicious_ids = [
+        "../../etc/passwd",
+        "../shadow",
+        "uploads/../../root",
+        "valid_id/../secret",
+    ]
+    for bad_id in malicious_ids:
+        res = client.delete(f"/api/assessments/{bad_id}")
+        assert res.status_code in [400, 404]
+
+
+def test_api_delete_assessment_handles_missing_file_cleanly(client: TestClient, db_session):
+    """
+    Issue C Safeguard:
+    If the database record exists but the physical binary file is absent,
+    deletion must succeed cleanly and report file_removed=False without misleading errors.
+    """
+    test_id = f"missingfile-{uuid.uuid4().hex[:8]}"
+    assessment = AssessmentRecord(
+        id=test_id,
+        filename="nofile.bin",
+        file_size_bytes=512,
+        sha256="0000000000000000000000000000000000000000000000000000000000000000",
+        md5="00000000000000000000000000000000",
+        image_type="APP_BINARY",
+        status="COMPLETED",
+        risk_score=0,
+        risk_rating="Clean",
+    )
+    db_session.add(assessment)
+    db_session.commit()
+
+    res = client.delete(f"/api/assessments/{test_id}")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["deleted"] is True
+    assert data["assessment_id"] == test_id
+    assert data["file_removed"] is False

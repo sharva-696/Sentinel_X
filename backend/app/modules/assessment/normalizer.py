@@ -27,20 +27,24 @@ def compute_finding_fingerprint(
     category: str,
     evidence_masked: str,
     byte_offset: Optional[str] = None,
+    identity_hash: Optional[str] = None,
 ) -> str:
     """
     Computes a deterministic, stable SHA-256 fingerprint for a finding.
-    Based on rule identifier, category, and sanitized evidence content.
-    Never includes raw secret values in the fingerprint.
+    Based on rule identifier, category, sanitized evidence content, and optional
+    one-way identity hash.
+    Preserves distinctions between different underlying secrets that sanitize to
+    the same placeholder, while never including raw secrets in the fingerprint.
     """
     norm_rule = (rule_id or "GENERIC_RULE").strip().upper()
     norm_cat = (category or "General").strip().lower()
     norm_evidence = (evidence_masked or "").strip()
+    norm_id_hash = (identity_hash or "").strip().lower()
     
     # Normalize whitespace to make fingerprint robust against minor formatting changes
     norm_evidence = " ".join(norm_evidence.split())
 
-    content = f"{norm_rule}|{norm_cat}|{norm_evidence}"
+    content = f"{norm_rule}|{norm_cat}|{norm_evidence}|{norm_id_hash}"
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
@@ -58,6 +62,7 @@ class NormalizedFinding(BaseModel):
     section: Optional[str] = None
     evidence_masked: str
     raw_occurrences: int = 1
+    identity_hash: Optional[str] = None
     fingerprint: str
     rationale: Optional[str] = None
     false_positive_cases: Optional[str] = None
@@ -103,6 +108,7 @@ class NormalizedFinding(BaseModel):
             "section": self.section,
             "evidence_masked": self.evidence_masked,
             "raw_occurrences": self.raw_occurrences,
+            "identity_hash": self.identity_hash,
             "fingerprint": self.fingerprint,
             "rationale": self.rationale,
             "false_positive_cases": self.false_positive_cases,
@@ -117,6 +123,7 @@ def normalize_finding(raw: Dict[str, Any], assessment_id: str) -> NormalizedFind
     """
     Transforms a raw finding dictionary into a strictly validated NormalizedFinding.
     Guarantees sanitized evidence and generates a stable deduplication fingerprint.
+    Distinguishes distinct secrets without exposing raw credentials.
     """
     rule_id = raw.get("rule_id", "GENERIC_RULE")
     category = raw.get("category", "General Security")
@@ -128,8 +135,13 @@ def normalize_finding(raw: Dict[str, Any], assessment_id: str) -> NormalizedFind
     sanitized_evidence = sanitize_evidence(str(raw_evidence))
 
     primary_offset = raw.get("byte_offset")
+    identity_hash = raw.get("identity_hash")
+    if not identity_hash and raw.get("evidence") and str(raw.get("evidence")) != sanitized_evidence:
+        # If unmasked evidence was supplied and differs from sanitized, derive identity hash
+        identity_hash = hashlib.sha256(str(raw.get("evidence")).strip().encode("utf-8", errors="replace")).hexdigest()[:16]
+
     fingerprint = raw.get("fingerprint") or compute_finding_fingerprint(
-        rule_id, category, sanitized_evidence, primary_offset
+        rule_id, category, sanitized_evidence, primary_offset, identity_hash=identity_hash
     )
 
     additional_offsets = raw.get("additional_offsets") or []
@@ -149,6 +161,7 @@ def normalize_finding(raw: Dict[str, Any], assessment_id: str) -> NormalizedFind
         section=raw.get("section"),
         evidence_masked=sanitized_evidence,
         raw_occurrences=occurrences,
+        identity_hash=identity_hash,
         fingerprint=fingerprint,
         rationale=raw.get("rationale"),
         false_positive_cases=raw.get("false_positive_cases"),
@@ -162,7 +175,11 @@ def deduplicate_findings(findings: List[NormalizedFinding]) -> List[NormalizedFi
     """
     Deduplicates a collection of normalized findings based on stable fingerprints.
     Merges occurrences, compiles all observed byte offsets, and retains primary location.
-    Preserves distinct findings with different rules or distinct evidence.
+    Preserves distinct findings with different rules, categories, or underlying identities.
+    
+    Safeguards:
+    - Confidence is strictly tied to detection rule certainty; occurrence counts never elevate confidence.
+    - Offsets are only aggregated when findings are genuinely equivalent.
     """
     dedup_map: Dict[str, NormalizedFinding] = {}
 
@@ -184,6 +201,7 @@ def deduplicate_findings(findings: List[NormalizedFinding]) -> List[NormalizedFi
                 section=f.section,
                 evidence_masked=f.evidence_masked,
                 raw_occurrences=f.raw_occurrences,
+                identity_hash=f.identity_hash,
                 fingerprint=f.fingerprint,
                 rationale=f.rationale,
                 false_positive_cases=f.false_positive_cases,
@@ -196,13 +214,15 @@ def deduplicate_findings(findings: List[NormalizedFinding]) -> List[NormalizedFi
             existing = dedup_map[fp]
             existing.raw_occurrences += f.raw_occurrences
 
-            # Collect offsets
+            # Collect offsets only for genuinely equivalent findings
             if f.byte_offset and f.byte_offset != existing.byte_offset:
                 if f.byte_offset not in existing.additional_offsets:
                     existing.additional_offsets.append(f.byte_offset)
 
             for extra in f.additional_offsets:
                 if extra and extra != existing.byte_offset and extra not in existing.additional_offsets:
+                    existing.additional_offsets.append(extra)
+            # Notice: existing.confidence is NOT elevated by occurrence counts or duplicates.
                     existing.additional_offsets.append(extra)
 
     return list(dedup_map.values())

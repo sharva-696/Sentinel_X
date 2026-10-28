@@ -8,7 +8,7 @@ class FindingRecord(Base):
     __tablename__ = "findings"
 
     id = Column(String(36), primary_key=True, index=True)  # UUIDv4
-    assessment_id = Column(String(36), ForeignKey("assessments.id"), nullable=False, index=True)
+    assessment_id = Column(String(36), ForeignKey("assessments.id", ondelete="CASCADE"), nullable=False, index=True)
     rule_id = Column(String(64), nullable=False, index=True)
     title = Column(String(256), nullable=False)
     category = Column(String(128), nullable=False)

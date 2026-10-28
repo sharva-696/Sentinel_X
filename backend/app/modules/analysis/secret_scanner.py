@@ -1,6 +1,7 @@
 import math
 import uuid
-from typing import Dict, Any, List, Optional
+import hashlib
+from typing import Dict, Any, List, Optional, Tuple
 from backend.app.modules.analysis.secret_rules import DETECTION_RULES
 from backend.app.utils.masking import sanitize_evidence, mask_secret
 
@@ -36,8 +37,8 @@ def scan_for_secrets(
     if assessment_id is None:
         assessment_id = str(uuid.uuid4())
 
-    # Raw matches dictionary keyed by (rule_id, sanitized_match) to deduplicate occurrences
-    dedup_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    # Raw matches dictionary keyed by (rule_id, sanitized_match, identity_hash) to deduplicate genuine equivalents
+    dedup_map: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
 
     # 1. Scan extracted printable strings
     for item in extracted_strings:
@@ -57,8 +58,13 @@ def scan_for_secrets(
                 if ent < rule["min_entropy"]:
                     continue
 
+            # Identify the underlying secret token to distinguish distinct credentials
+            # without exposing raw secrets in the fingerprint or finding dictionary
+            secret_token = match.group(1) if match.groups() else matched_text
+            identity_hash = hashlib.sha256(secret_token.strip().encode("utf-8", errors="replace")).hexdigest()[:16]
+
             sanitized_snippet = sanitize_evidence(val)
-            key = (rule["rule_id"], sanitized_snippet)
+            key = (rule["rule_id"], sanitized_snippet, identity_hash)
 
             if key not in dedup_map:
                 dedup_map[key] = {
@@ -75,6 +81,7 @@ def scan_for_secrets(
                     "section": None,
                     "evidence_masked": sanitized_snippet,
                     "raw_occurrences": 1,
+                    "identity_hash": identity_hash,
                     "rationale": rule["rationale"],
                     "false_positive_cases": rule["false_positive_cases"],
                     "remediation": rule["remediation"],
@@ -100,7 +107,8 @@ def scan_for_secrets(
                 "ascii", errors="replace"
             )
             sanitized_snippet = sanitize_evidence(snippet)
-            key = (pem_rule["rule_id"], sanitized_snippet)
+            p_identity = hashlib.sha256(p_match.group(0)).hexdigest()[:16]
+            key = (pem_rule["rule_id"], sanitized_snippet, p_identity)
 
             if key not in dedup_map:
                 dedup_map[key] = {
@@ -117,6 +125,7 @@ def scan_for_secrets(
                     "section": None,
                     "evidence_masked": sanitized_snippet,
                     "raw_occurrences": 1,
+                    "identity_hash": p_identity,
                     "rationale": pem_rule["rationale"],
                     "false_positive_cases": pem_rule["false_positive_cases"],
                     "remediation": pem_rule["remediation"],
