@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from sqlalchemy.orm import Session
 
 from backend.app.utils.crypto import compute_bytes_hashes
@@ -10,6 +10,11 @@ from backend.app.modules.analysis.esp_parser import parse_esp_binary
 from backend.app.modules.analysis.string_extractor import extract_strings_with_offsets, categorize_strings
 from backend.app.modules.analysis.secret_scanner import scan_for_secrets
 from backend.app.modules.analysis.risk_scorer import calculate_risk_score
+from backend.app.modules.assessment.normalizer import (
+    normalize_finding,
+    deduplicate_findings,
+    NormalizedFinding,
+)
 from backend.app.models.assessment import AssessmentRecord
 from backend.app.models.finding import FindingRecord
 
@@ -21,7 +26,8 @@ def analyze_firmware_bytes(
 ) -> Dict[str, Any]:
     """
     Executes a complete, offline, hardware-independent firmware assessment.
-    Returns structured results including metadata, hashes, strings, and sanitized findings.
+    Performs binary parsing, string extraction, secret scanning, normalization,
+    deterministic deduplication, explainable risk scoring, and evidence redaction.
     """
     # 1. Input Validation
     validate_file_size(len(file_bytes))
@@ -41,15 +47,15 @@ def analyze_firmware_bytes(
     extracted_strings, string_meta = extract_strings_with_offsets(file_bytes, min_length=4, max_strings=5000)
     categorized_strings = categorize_strings(extracted_strings)
 
-    # 5. Secret scanning & finding generation (with deduplication and masking)
-    findings = scan_for_secrets(extracted_strings, file_bytes, assessment_id=assessment_id)
+    # 5. Secret scanning & initial raw finding generation
+    raw_findings = scan_for_secrets(extracted_strings, file_bytes, assessment_id=assessment_id)
 
-    # If partition table discovered missing OTA redundancy, generate partition finding
+    # If partition table discovered missing OTA redundancy, add partition finding
     if parsed_metadata.get("partitions"):
         parts = parsed_metadata["partitions"]
         has_ota = any(p.get("subtype") in ["ota_0", "ota_1"] for p in parts)
         if not has_ota and len(parts) > 1:
-            findings.append({
+            raw_findings.append({
                 "id": str(uuid.uuid4()),
                 "assessment_id": assessment_id,
                 "rule_id": "SEC-PART-001",
@@ -70,17 +76,24 @@ def analyze_firmware_bytes(
                 "is_potential": True,
             })
 
-    # 6. Explainable Risk Score calculation
-    risk_score, risk_rating, score_breakdown = calculate_risk_score(findings)
+    # 6. Normalize and Deduplicate Findings with stable fingerprints
+    normalized_list = [normalize_finding(rf, assessment_id) for rf in raw_findings]
+    deduped_findings: List[NormalizedFinding] = deduplicate_findings(normalized_list)
 
-    # 7. Summary aggregation
+    # Export findings to dictionary representations
+    findings_dicts = [f.to_dict() for f in deduped_findings]
+
+    # 7. Explainable Risk Score calculation from deduplicated normalized findings
+    risk_score, risk_rating, score_breakdown = calculate_risk_score(findings_dicts)
+
+    # 8. Summary aggregation
     summary = {
-        "critical": sum(1 for f in findings if f["severity"] == "Critical"),
-        "high": sum(1 for f in findings if f["severity"] == "High"),
-        "medium": sum(1 for f in findings if f["severity"] == "Medium"),
-        "low": sum(1 for f in findings if f["severity"] == "Low"),
-        "informational": sum(1 for f in findings if f["severity"] == "Informational"),
-        "total_unique": len(findings),
+        "critical": sum(1 for f in deduped_findings if f.severity.value == "Critical"),
+        "high": sum(1 for f in deduped_findings if f.severity.value == "High"),
+        "medium": sum(1 for f in deduped_findings if f.severity.value == "Medium"),
+        "low": sum(1 for f in deduped_findings if f.severity.value == "Low"),
+        "informational": sum(1 for f in deduped_findings if f.severity.value == "Informational"),
+        "total_unique": len(deduped_findings),
     }
 
     completed_at = datetime.now(timezone.utc)
@@ -101,7 +114,7 @@ def analyze_firmware_bytes(
         "risk_score": risk_score,
         "risk_rating": risk_rating,
         "score_breakdown": score_breakdown,
-        "findings": findings,
+        "findings": findings_dicts,
         "status": "COMPLETED",
         "created_at": created_at.isoformat(),
         "completed_at": completed_at.isoformat(),
@@ -110,29 +123,56 @@ def analyze_firmware_bytes(
 
 def persist_analysis_record(db: Session, analysis_result: Dict[str, Any]) -> AssessmentRecord:
     """
-    Persists the assessment record and sanitized findings to SQLite using an isolated transaction.
+    Persists or updates the assessment record and sanitized findings in SQLite.
+    Guarantees idempotency: rerunning or retrying persistence on the same assessment ID
+    safely updates existing rows without duplicate key errors or orphan records.
     Never stores unredacted sensitive values.
     """
-    assessment = AssessmentRecord(
-        id=analysis_result["assessment_id"],
-        filename=analysis_result["filename"],
-        file_size_bytes=analysis_result["file_size_bytes"],
-        sha256=analysis_result["sha256"],
-        md5=analysis_result["md5"],
-        image_type=analysis_result["image_type"],
-        status=analysis_result["status"],
-        risk_score=analysis_result.get("risk_score", 0),
-        risk_rating=analysis_result.get("risk_rating", "Clean"),
-        image_metadata=analysis_result["image_metadata"],
-        created_at=datetime.fromisoformat(analysis_result["created_at"]),
-        completed_at=datetime.fromisoformat(analysis_result["completed_at"]),
-    )
-    db.add(assessment)
+    assessment_id = analysis_result["assessment_id"]
+    existing_assessment = db.query(AssessmentRecord).filter(AssessmentRecord.id == assessment_id).first()
 
+    created_dt = datetime.fromisoformat(analysis_result["created_at"])
+    completed_dt = datetime.fromisoformat(analysis_result["completed_at"])
+
+    if existing_assessment:
+        existing_assessment.filename = analysis_result["filename"]
+        existing_assessment.file_size_bytes = analysis_result["file_size_bytes"]
+        existing_assessment.sha256 = analysis_result["sha256"]
+        existing_assessment.md5 = analysis_result["md5"]
+        existing_assessment.image_type = analysis_result["image_type"]
+        existing_assessment.status = analysis_result["status"]
+        existing_assessment.risk_score = analysis_result.get("risk_score", 0)
+        existing_assessment.risk_rating = analysis_result.get("risk_rating", "Clean")
+        existing_assessment.image_metadata = analysis_result["image_metadata"]
+        existing_assessment.score_breakdown = analysis_result.get("score_breakdown")
+        existing_assessment.completed_at = completed_dt
+
+        # Remove previous findings for this assessment to ensure clean idempotent replace
+        db.query(FindingRecord).filter(FindingRecord.assessment_id == assessment_id).delete()
+        assessment = existing_assessment
+    else:
+        assessment = AssessmentRecord(
+            id=assessment_id,
+            filename=analysis_result["filename"],
+            file_size_bytes=analysis_result["file_size_bytes"],
+            sha256=analysis_result["sha256"],
+            md5=analysis_result["md5"],
+            image_type=analysis_result["image_type"],
+            status=analysis_result["status"],
+            risk_score=analysis_result.get("risk_score", 0),
+            risk_rating=analysis_result.get("risk_rating", "Clean"),
+            image_metadata=analysis_result["image_metadata"],
+            score_breakdown=analysis_result.get("score_breakdown"),
+            created_at=created_dt,
+            completed_at=completed_dt,
+        )
+        db.add(assessment)
+
+    # Persist normalized findings with stable fingerprints
     for f_data in analysis_result["findings"]:
         finding = FindingRecord(
-            id=f_data["id"],
-            assessment_id=analysis_result["assessment_id"],
+            id=f_data.get("id") or str(uuid.uuid4()),
+            assessment_id=assessment_id,
             rule_id=f_data["rule_id"],
             title=f_data["title"],
             category=f_data["category"],
@@ -144,11 +184,13 @@ def persist_analysis_record(db: Session, analysis_result: Dict[str, Any]) -> Ass
             section=f_data.get("section"),
             evidence_masked=f_data["evidence_masked"],
             raw_occurrences=f_data.get("raw_occurrences", 1),
+            fingerprint=f_data.get("fingerprint"),
             rationale=f_data.get("rationale"),
             false_positive_cases=f_data.get("false_positive_cases"),
             remediation=f_data.get("remediation"),
             verification_limitations=f_data.get("verification_limitations"),
             is_potential=f_data.get("is_potential", True),
+            created_at=datetime.fromisoformat(f_data["created_at"]) if "created_at" in f_data else datetime.now(timezone.utc),
         )
         db.add(finding)
 

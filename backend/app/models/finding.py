@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Text, Boolean, ForeignKey, JSON
+from datetime import datetime, timezone
+from sqlalchemy import Column, Integer, String, Text, Boolean, ForeignKey, JSON, DateTime
 from sqlalchemy.orm import relationship
 from backend.app.database import Base
 
@@ -19,10 +20,12 @@ class FindingRecord(Base):
     section = Column(String(64), nullable=True)  # DROM, IROM, etc.
     evidence_masked = Column(Text, nullable=False)
     raw_occurrences = Column(Integer, nullable=False, default=1)
+    fingerprint = Column(String(64), nullable=True, index=True)  # Stable deduplication fingerprint
     rationale = Column(Text, nullable=True)
     false_positive_cases = Column(Text, nullable=True)
     remediation = Column(Text, nullable=True)
     verification_limitations = Column(Text, nullable=True)
     is_potential = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     assessment = relationship("AssessmentRecord", back_populates="findings")

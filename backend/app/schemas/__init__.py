@@ -5,12 +5,21 @@ from backend.app.schemas.device import (
     DeviceIdentifyRequest,
     DeviceIdentifyData,
     DeviceIdentifyResponse,
+    DeviceRecordResponse,
+    DeviceListResponse,
 )
 from backend.app.schemas.firmware import FirmwareUploadResponse, ImageMetadata
-from backend.app.schemas.finding import FindingResponse, FindingsListResponse, FindingEvidence
+from backend.app.schemas.finding import (
+    FindingResponse,
+    FindingsListResponse,
+    FindingEvidence,
+    FindingSeverity,
+    FindingConfidence,
+)
 from backend.app.schemas.assessment import (
     AssessmentResponse,
     AssessmentDetailResponse,
+    AssessmentListResponse,
     AnalysisRunResponse,
     FindingsSummary,
 )
@@ -24,13 +33,18 @@ __all__ = [
     "DeviceIdentifyRequest",
     "DeviceIdentifyData",
     "DeviceIdentifyResponse",
+    "DeviceRecordResponse",
+    "DeviceListResponse",
     "FirmwareUploadResponse",
     "ImageMetadata",
     "FindingResponse",
     "FindingsListResponse",
     "FindingEvidence",
+    "FindingSeverity",
+    "FindingConfidence",
     "AssessmentResponse",
     "AssessmentDetailResponse",
+    "AssessmentListResponse",
     "AnalysisRunResponse",
     "FindingsSummary",
 ]

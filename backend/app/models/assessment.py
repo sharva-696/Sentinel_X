@@ -18,6 +18,7 @@ class AssessmentRecord(Base):
     risk_rating = Column(String(32), nullable=False, default="Clean")
     device_id = Column(Integer, ForeignKey("devices.id"), nullable=True)
     image_metadata = Column(JSON, nullable=True)
+    score_breakdown = Column(JSON, nullable=True)  # Explainable score calculation breakdown
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     completed_at = Column(DateTime, nullable=True)

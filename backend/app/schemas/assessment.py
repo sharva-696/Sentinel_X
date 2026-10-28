@@ -24,6 +24,7 @@ class AssessmentResponse(BaseModel):
     risk_score: int
     risk_rating: str
     image_metadata: Optional[Dict[str, Any]] = None
+    score_breakdown: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
@@ -34,6 +35,13 @@ class AssessmentResponse(BaseModel):
 
 class AssessmentDetailResponse(AssessmentResponse):
     findings: List[FindingResponse] = []
+
+
+class AssessmentListResponse(BaseModel):
+    total_assessments: int
+    page: int
+    page_size: int
+    assessments: List[AssessmentResponse]
 
 
 class AnalysisRunResponse(BaseModel):

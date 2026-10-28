@@ -6,11 +6,12 @@ from backend.app.database import init_db
 from backend.app.routers.health import router as health_router
 from backend.app.routers.firmware import router as firmware_router
 from backend.app.routers.device import router as device_router
+from backend.app.routers.assessment import router as assessment_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize SQLite database and tables
+    # Initialize SQLite database and upgrade schema
     init_db()
     yield
 
@@ -35,6 +36,7 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(firmware_router)
 app.include_router(device_router)
+app.include_router(assessment_router)
 
 
 @app.get("/")
