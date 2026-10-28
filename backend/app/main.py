@@ -5,6 +5,7 @@ from backend.app.config import settings
 from backend.app.database import init_db
 from backend.app.routers.health import router as health_router
 from backend.app.routers.firmware import router as firmware_router
+from backend.app.routers.device import router as device_router
 
 
 @asynccontextmanager
@@ -33,6 +34,7 @@ app.add_middleware(
 # Include core routers
 app.include_router(health_router)
 app.include_router(firmware_router)
+app.include_router(device_router)
 
 
 @app.get("/")
