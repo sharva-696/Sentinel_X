@@ -55,12 +55,39 @@ DETECTION_RULES: List[Dict[str, Any]] = [
         "severity": "High",
         "confidence": "Medium",
         "detection_method": "Wi-Fi Configuration Pattern Matching",
-        "pattern": re.compile(r"(?i)(?:wifi_password|wpa_passphrase|wifi_pass|wifi_sta_pwd)\s*[:=]\s*[\"']?([^\s\"';,]{8,63})[\"']?"),
+        "pattern": re.compile(
+            r"(?i)(?:"
+            r"(?:wifi_password|wpa_passphrase|wifi_pass|wifi_sta_pwd|ap_password|sta_password|wifi_secret|wpa2_key|wifi_pw|ap_pw|sta_pw)\s*[:=]\s*[\"']?([^\s\"';,()]{6,63})[\"']?"
+            r"|WiFi\.begin\s*\(\s*[\"'][^\"']+[\"']\s*,\s*[\"']([^\"'\r\n]{6,63})[\"']\s*\)"
+            r"|WPA2:\s*([^\s]{6,63})"
+            r"|PSK:\s*([^\s]{6,63})"
+            r")"
+        ),
         "min_entropy": 2.0,
         "rationale": "Plaintext Wi-Fi credentials in application binaries expose the local network to unauthorized access if firmware is extracted.",
         "false_positive_cases": "SDK template strings ('your_password', 'my_wifi_pass') or test suite binaries.",
         "remediation": "Remove hardcoded credentials from source code. Implement dynamic runtime provisioning using ESP-IDF WiFi Provisioning (BLE/SoftAP) and store credentials in encrypted NVS.",
         "verification_limitations": "Static match; does not verify if the credentials match any real access point.",
+        "is_potential": True,
+    },
+    {
+        "rule_id": "SEC-PWD-001",
+        "title": "Hardcoded Password or Secret Credential",
+        "category": "Hardcoded Secrets",
+        "severity": "High",
+        "confidence": "Medium",
+        "detection_method": "Credential & Password Pattern Matching",
+        "pattern": re.compile(
+            r"(?i)(?:"
+            r"\b(?:password|passwd|passcode|secret_key|api_secret|client_secret|user_password|admin_password|root_pwd|pw|pwd)\s*[:=]\s*[\"']?([^\s\"';,()]{6,64})[\"']?"
+            r"|\"(?:password|passwd|passcode|secret|api_secret|secret_key|pw|pwd)\"\s*:\s*[\"']?([^\s\"';,()]{6,64})[\"']?"
+            r")"
+        ),
+        "min_entropy": 1.5,
+        "rationale": "Hardcoded passwords or secrets embedded in binary images allow unauthorized authentication, privilege escalation, or backend API access.",
+        "false_positive_cases": "Default documentation placeholders, unit test credentials, or public salt labels.",
+        "remediation": "Remove hardcoded passwords from firmware source code. Inject credentials dynamically at runtime via secure provisioning or store encrypted in NVS.",
+        "verification_limitations": "Static detection; does not verify whether the credential is valid or active against production services.",
         "is_potential": True,
     },
     {

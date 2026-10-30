@@ -18,7 +18,7 @@ INDICATOR_PATTERNS = {
 
 
 def extract_strings_with_offsets(
-    data: bytes, min_length: int = 4, max_strings: int = 5000
+    data: bytes, min_length: int = 4, max_strings: int = 25000
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Extracts printable ASCII strings and their exact byte offsets from raw binary data.

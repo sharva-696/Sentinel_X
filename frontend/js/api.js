@@ -67,14 +67,16 @@ export class ApiClient {
         return this._request(`/api/assessments?${params.toString()}`);
     }
 
-    async getAssessment(id) {
-        return this._request(`/api/assessments/${encodeURIComponent(id)}`);
+    async getAssessment(id, { revealSecrets = false } = {}) {
+        const query = revealSecrets ? '?reveal_secrets=true' : '';
+        return this._request(`/api/assessments/${encodeURIComponent(id)}${query}`);
     }
 
-    async getAssessmentFindings(id, { severity, category } = {}) {
+    async getAssessmentFindings(id, { severity, category, revealSecrets = false } = {}) {
         const params = new URLSearchParams();
         if (severity) params.append('severity', severity);
         if (category) params.append('category', category);
+        if (revealSecrets) params.append('reveal_secrets', 'true');
         const query = params.toString() ? `?${params.toString()}` : '';
         return this._request(`/api/assessments/${encodeURIComponent(id)}/findings${query}`);
     }
@@ -128,7 +130,7 @@ export class ApiClient {
         return true;
     }
 
-    // Device Interrogation
+    // Device Interrogation & Acquisition
     async listSerialPorts() {
         return this._request('/api/devices/ports');
     }
@@ -136,7 +138,26 @@ export class ApiClient {
     async identifyDevice(port, mock = false) {
         return this._request('/api/devices/identify', {
             method: 'POST',
-            body: JSON.stringify({ port, mock }),
+            body: JSON.stringify({
+                port,
+                force_mock: mock,
+                mock: mock,
+                timeout_seconds: 15.0,
+            }),
+        });
+    }
+
+    async dumpDeviceFirmware({ port, baudrate = 460800, flash_size_bytes = 4194304, mock = false, device_id = null }) {
+        return this._request('/api/devices/dump-firmware', {
+            method: 'POST',
+            body: JSON.stringify({
+                port,
+                baudrate,
+                flash_size_bytes,
+                force_mock: mock,
+                mock: mock,
+                device_id,
+            }),
         });
     }
 
@@ -146,6 +167,12 @@ export class ApiClient {
 
     async getDevice(id) {
         return this._request(`/api/devices/${encodeURIComponent(id)}`);
+    }
+
+    async deleteDevice(id) {
+        return this._request(`/api/devices/${encodeURIComponent(id)}`, {
+            method: 'DELETE',
+        });
     }
 }
 

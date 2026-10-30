@@ -4,7 +4,7 @@ from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
-from backend.app.config import settings
+from backend.app.config import settings, UPLOADS_DIR
 from backend.app.modules.analysis import (
     analyze_firmware_bytes,
     persist_analysis_record,
@@ -43,6 +43,10 @@ async def analyze_firmware(
 
     try:
         result = analyze_firmware_bytes(contents, original_filename=filename)
+        # Persist uploaded binary to storage for subsequent review and deletion safety
+        file_path = UPLOADS_DIR / f"{result['assessment_id']}.bin"
+        with open(file_path, "wb") as f:
+            f.write(contents)
         persist_analysis_record(db, result)
         return result
     except ValidationError as ve:
@@ -129,7 +133,11 @@ async def upload_firmware(
 
 
 @router.get("/{assessment_id}", status_code=status.HTTP_200_OK)
-def get_assessment(assessment_id: str, db: Session = Depends(get_db)):
+def get_assessment(
+    assessment_id: str,
+    reveal_secrets: bool = False,
+    db: Session = Depends(get_db),
+):
     """Retrieves stored assessment record and associated sanitized findings."""
     assessment = db.query(AssessmentRecord).filter(AssessmentRecord.id == assessment_id).first()
     if not assessment:
@@ -138,8 +146,9 @@ def get_assessment(assessment_id: str, db: Session = Depends(get_db)):
             detail=f"Assessment with ID {assessment_id} not found.",
         )
 
-    findings = [
-        {
+    findings = []
+    for f in assessment.findings:
+        f_dict = {
             "id": f.id,
             "rule_id": f.rule_id,
             "title": f.title,
@@ -156,8 +165,10 @@ def get_assessment(assessment_id: str, db: Session = Depends(get_db)):
             "remediation": f.remediation,
             "is_potential": f.is_potential,
         }
-        for f in assessment.findings
-    ]
+        if reveal_secrets:
+            f_dict["evidence_raw"] = f.evidence_raw
+            f_dict["secret_token"] = f.secret_token
+        findings.append(f_dict)
 
     return {
         "assessment_id": assessment.id,

@@ -52,6 +52,12 @@ def upgrade_db_schema():
             if "created_at" not in existing_finding_cols and "id" in existing_finding_cols:
                 conn.execute(text("ALTER TABLE findings ADD COLUMN created_at DATETIME"))
                 logger.info("Migrated schema: Added column 'created_at' to 'findings'.")
+            if "evidence_raw" not in existing_finding_cols and "id" in existing_finding_cols:
+                conn.execute(text("ALTER TABLE findings ADD COLUMN evidence_raw TEXT"))
+                logger.info("Migrated schema: Added column 'evidence_raw' to 'findings'.")
+            if "secret_token" not in existing_finding_cols and "id" in existing_finding_cols:
+                conn.execute(text("ALTER TABLE findings ADD COLUMN secret_token VARCHAR(256)"))
+                logger.info("Migrated schema: Added column 'secret_token' to 'findings'.")
 
             # Ensure indexes exist
             if "fingerprint" in existing_finding_cols or "fingerprint" not in existing_finding_cols:

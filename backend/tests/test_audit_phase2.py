@@ -233,7 +233,7 @@ def test_risk_scorer_single_critical_finding():
         "confidence": "High",
         "raw_occurrences": 1,
     }
-    score, rating, breakdown = calculate_risk_score([finding])
+    score, rating, breakdown = calculate_risk_score([finding], enforce_severity_floor=False)
     # Critical weight = 10, Conf High = 1.0, 1 occurrence = 1.0 multiplier -> 10 pts
     assert score == 10
     assert rating == "Low"
@@ -249,7 +249,7 @@ def test_risk_scorer_dampening_repetitive_findings():
         "confidence": "High",
         "raw_occurrences": 10,
     }
-    score, rating, breakdown = calculate_risk_score([finding_10_occurrences])
+    score, rating, breakdown = calculate_risk_score([finding_10_occurrences], enforce_severity_floor=False)
     # High weight = 7, Conf High = 1.0
     # Dampening factor = 0.2, max dampening = 5 -> multiplier = 1 + (0.2 * 5) = 2.0
     # Expected points = 7 * 1.0 * 2.0 = 14.0 (NOT 7 * 10 = 70!)
@@ -268,9 +268,36 @@ def test_risk_scorer_composite_severity():
         {"rule_id": "SEC-NET-001", "severity": "Low", "confidence": "Medium", "raw_occurrences": 1},    # 1 * 0.8 = 0.8 pts
     ]
     # Total = 10 + 7 + 3.2 + 0.8 = 21.0 pts
-    score, rating, breakdown = calculate_risk_score(findings)
+    score, rating, breakdown = calculate_risk_score(findings, enforce_severity_floor=False)
     assert score == 21
     assert rating == "Moderate"
+
+
+def test_risk_scorer_severity_floors():
+    """Verifies that High severity findings floor the score at >= 60 (High) and Critical at >= 80 (Critical)."""
+    high_finding = {
+        "rule_id": "SEC-PWD-001",
+        "title": "Hardcoded Password",
+        "severity": "High",
+        "confidence": "Medium",
+        "raw_occurrences": 1,
+    }
+    score, rating, breakdown = calculate_risk_score([high_finding])
+    assert score >= 60
+    assert rating == "High"
+    assert breakdown["severity_floor_applied"] is True
+
+    crit_finding = {
+        "rule_id": "SEC-KEY-001",
+        "title": "Private Key",
+        "severity": "Critical",
+        "confidence": "High",
+        "raw_occurrences": 1,
+    }
+    crit_score, crit_rating, _ = calculate_risk_score([crit_finding])
+    assert crit_score >= 80
+    assert crit_rating == "Critical"
+
 
 
 def test_risk_scorer_score_capped_at_100():
@@ -313,3 +340,44 @@ def test_api_nonexistent_assessment_returns_404(client: TestClient):
     res = client.get("/api/firmware/non-existent-uuid-000000")
     assert res.status_code == 404
     assert "not found" in res.json()["detail"].lower()
+
+
+def test_api_reveal_secrets_faculty_demo_mode(client: TestClient):
+    """
+    Verifies that secrets are masked by default across standard endpoints and downloadable reports,
+    but can be revealed on demand via reveal_secrets=true for faculty demo presentations.
+    """
+    esp_bin = create_synthetic_esp32_binary()
+    file_payload = {"file": ("demo_app.bin", io.BytesIO(esp_bin), "application/octet-stream")}
+    res = client.post("/api/firmware/analyze", files=file_payload)
+    assert res.status_code == 200
+    assessment_id = res.json()["assessment_id"]
+
+    # 1. Standard assessment GET: secrets MUST be masked
+    std_res = client.get(f"/api/assessments/{assessment_id}")
+    assert std_res.status_code == 200
+    std_data = std_res.json()
+    wifi_f = next(f for f in std_data["findings"] if f["rule_id"] == "SEC-WIFI-001")
+    assert wifi_f["evidence"]["snippet_raw"] is None
+    assert wifi_f["evidence"]["secret_token"] is None
+    assert "SuperSecretWifiPass123" not in std_res.text
+
+    # 2. Demo Mode assessment GET: raw secret and token are revealed
+    demo_res = client.get(f"/api/assessments/{assessment_id}?reveal_secrets=true")
+    assert demo_res.status_code == 200
+    demo_data = demo_res.json()
+    wifi_demo = next(f for f in demo_data["findings"] if f["rule_id"] == "SEC-WIFI-001")
+    assert wifi_demo["evidence"]["snippet_raw"] is not None
+    assert wifi_demo["evidence"]["secret_token"] == "SuperSecretWifiPass123"
+    assert "SuperSecretWifiPass123" in demo_res.text
+
+    # 3. Downloadable reports (HTML & PDF) MUST remain sanitized (no raw password)
+    html_res = client.get(f"/api/assessments/{assessment_id}/report/html")
+    assert html_res.status_code == 200
+    assert "SuperSecretWifiPass123" not in html_res.text
+    assert "wifi_password" in html_res.text  # masked present
+
+    pdf_res = client.get(f"/api/assessments/{assessment_id}/report/pdf")
+    assert pdf_res.status_code == 200
+    assert b"SuperSecretWifiPass123" not in pdf_res.content
+

@@ -19,6 +19,8 @@ class FindingRecord(Base):
     additional_offsets = Column(JSON, nullable=True)  # Deduplicated list of additional offsets
     section = Column(String(64), nullable=True)  # DROM, IROM, etc.
     evidence_masked = Column(Text, nullable=False)
+    evidence_raw = Column(Text, nullable=True)  # Raw unredacted evidence snippet for authorized faculty/auditor demo inspection
+    secret_token = Column(String(256), nullable=True)  # Extracted credential token for prominent UI highlight
     raw_occurrences = Column(Integer, nullable=False, default=1)
     fingerprint = Column(String(64), nullable=True, index=True)  # Stable deduplication fingerprint
     rationale = Column(Text, nullable=True)

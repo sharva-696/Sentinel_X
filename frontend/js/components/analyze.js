@@ -58,6 +58,13 @@ export function renderAnalyze(container) {
                         Start Security Assessment
                     </button>
                 </div>
+
+                <div class="mt-4 pt-3 border-top flex-between">
+                    <span class="text-xs text-muted">Have an ESP32 connected via USB?</span>
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-goto-device-dump">
+                        Dump from Device &rarr;
+                    </button>
+                </div>
             </div>
 
             <!-- Analysis Guidance & Scope Panel -->
@@ -205,6 +212,10 @@ export function renderAnalyze(container) {
         }
     });
 
+    container.querySelector('#btn-goto-device-dump')?.addEventListener('click', () => {
+        state.setRoute('devices');
+    });
+
     // Submit scanning
     submitBtn.addEventListener('click', async () => {
         if (!currentSelectedFile) return;
@@ -236,7 +247,11 @@ export function renderAnalyze(container) {
                     </div>
                     <div class="metric-card">
                         <div class="metric-label">Unique Findings</div>
-                        <div class="metric-val text-danger">${result.summary.total_unique}</div>
+                        <div class="metric-val text-danger">
+                            ${(result.findings_summary && result.findings_summary.total_unique !== undefined) 
+                                ? result.findings_summary.total_unique 
+                                : (result.findings ? result.findings.length : 0)}
+                        </div>
                     </div>
                 </div>
             `;

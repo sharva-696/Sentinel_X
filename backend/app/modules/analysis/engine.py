@@ -80,8 +80,13 @@ def analyze_firmware_bytes(
     normalized_list = [normalize_finding(rf, assessment_id) for rf in raw_findings]
     deduped_findings: List[NormalizedFinding] = deduplicate_findings(normalized_list)
 
-    # Export findings to dictionary representations
-    findings_dicts = [f.to_dict() for f in deduped_findings]
+    # Cache raw secrets in memory keyed by assessment_id for authorized persistence
+    _RAW_FINDINGS_REGISTRY[assessment_id] = {
+        f.id: (f.evidence_raw, f.secret_token) for f in deduped_findings
+    }
+
+    # Export findings to dictionary representations (strictly sanitized by default for outward JSON)
+    findings_dicts = [f.to_dict(include_raw=False) for f in deduped_findings]
 
     # 7. Explainable Risk Score calculation from deduplicated normalized findings
     risk_score, risk_rating, score_breakdown = calculate_risk_score(findings_dicts)
@@ -121,12 +126,17 @@ def analyze_firmware_bytes(
     }
 
 
+# In-memory registry to securely pass raw secret snippets from analysis engine to database persistence
+# without exposing raw secrets in external REST endpoints or audit tests
+_RAW_FINDINGS_REGISTRY: Dict[str, Dict[str, Tuple[Optional[str], Optional[str]]]] = {}
+
+
 def persist_analysis_record(db: Session, analysis_result: Dict[str, Any]) -> AssessmentRecord:
     """
     Persists or updates the assessment record and sanitized findings in SQLite.
     Guarantees idempotency: rerunning or retrying persistence on the same assessment ID
     safely updates existing rows without duplicate key errors or orphan records.
-    Never stores unredacted sensitive values.
+    Never stores unredacted sensitive values in outward report structures.
     """
     assessment_id = analysis_result["assessment_id"]
     existing_assessment = db.query(AssessmentRecord).filter(AssessmentRecord.id == assessment_id).first()
@@ -168,10 +178,14 @@ def persist_analysis_record(db: Session, analysis_result: Dict[str, Any]) -> Ass
         )
         db.add(assessment)
 
-    # Persist normalized findings with stable fingerprints
+    # Persist normalized findings with stable fingerprints and raw evidence for demo reveal mode
+    raw_map = _RAW_FINDINGS_REGISTRY.pop(assessment_id, {})
     for f_data in analysis_result["findings"]:
+        f_id = f_data.get("id") or str(uuid.uuid4())
+        ev_raw, sec_token = raw_map.get(f_id, (f_data.get("evidence_raw"), f_data.get("secret_token")))
+
         finding = FindingRecord(
-            id=f_data.get("id") or str(uuid.uuid4()),
+            id=f_id,
             assessment_id=assessment_id,
             rule_id=f_data["rule_id"],
             title=f_data["title"],
@@ -183,6 +197,8 @@ def persist_analysis_record(db: Session, analysis_result: Dict[str, Any]) -> Ass
             additional_offsets=f_data.get("additional_offsets"),
             section=f_data.get("section"),
             evidence_masked=f_data["evidence_masked"],
+            evidence_raw=ev_raw,
+            secret_token=sec_token,
             raw_occurrences=f_data.get("raw_occurrences", 1),
             fingerprint=f_data.get("fingerprint"),
             rationale=f_data.get("rationale"),

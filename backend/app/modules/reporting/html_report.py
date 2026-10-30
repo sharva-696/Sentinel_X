@@ -85,10 +85,32 @@ def generate_html_report(data: Dict[str, Any]) -> str:
 
     # Render Partition Table if extracted
     if partitions:
+        def _fmt_offset(p):
+            raw_off = p.get("offset")
+            if isinstance(raw_off, int):
+                return f"0x{raw_off:06x}"
+            elif isinstance(raw_off, str) and raw_off.startswith("0x"):
+                return raw_off
+            try:
+                return f"0x{int(raw_off or p.get('offset_dec') or 0):06x}"
+            except Exception:
+                return str(raw_off or "0x000000")
+
+        def _fmt_size(p):
+            raw_s = p.get("size_bytes")
+            if raw_s is None:
+                raw_s = p.get("size_dec")
+            if isinstance(raw_s, str):
+                try:
+                    raw_s = int(raw_s, 16 if raw_s.startswith("0x") else 10)
+                except Exception:
+                    raw_s = 0
+            return f"{(raw_s or 0) // 1024} KB"
+
         part_rows = "".join(
             f"<tr><td><code>{esc(p.get('label'))}</code></td><td>{esc(p.get('type'))}</td>"
-            f"<td>{esc(p.get('subtype'))}</td><td><code>0x{p.get('offset', 0):06x}</code></td>"
-            f"<td>{esc(p.get('size_bytes', 0) // 1024)} KB</td><td>{esc(p.get('flags', 'None'))}</td></tr>"
+            f"<td>{esc(p.get('subtype'))}</td><td><code>{esc(_fmt_offset(p))}</code></td>"
+            f"<td>{esc(_fmt_size(p))}</td><td>{esc(p.get('flags', 'None'))}</td></tr>"
             for p in partitions
         )
         partition_section_html = f"""

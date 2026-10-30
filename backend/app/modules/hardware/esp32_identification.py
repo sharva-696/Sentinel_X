@@ -128,15 +128,16 @@ def parse_esptool_output(output: str, port: str) -> IdentificationResult:
             port=port,
             warnings=[
                 f"Timed out synchronizing with ESP32 bootloader on {port}. "
-                "Ensure board is powered, USB cable supports data, and press the BOOT button if auto-reset failed."
+                "Ensure board is powered and USB cable supports data. "
+                "On boards with CH340 or auto-reset issues, press and hold the 'BOOT' (or 'IO0') button on the ESP32 while clicking Identify."
             ],
             raw_output=output,
         )
 
     # 4. Check for Chip identification
-    chip_match = re.search(r"Chip is ([^\n\r]+)", output)
+    chip_match = re.search(r"Chip (?:is|type:)\s*([^\n\r]+)", output, re.IGNORECASE)
     if not chip_match:
-        chip_match = re.search(r"Detecting chip type\.\.\. ([^\n\r]+)", output)
+        chip_match = re.search(r"Detecting chip type\.\.\.\s*([^\n\r]+)", output, re.IGNORECASE)
 
     if not chip_match:
         return IdentificationResult(
@@ -171,7 +172,7 @@ def parse_esptool_output(output: str, port: str) -> IdentificationResult:
 
     # Extract Crystal
     crystal = None
-    cryst_match = re.search(r"Crystal is\s*([0-9]+MHz)", output, re.IGNORECASE)
+    cryst_match = re.search(r"Crystal (?:is|frequency:)\s*([0-9]+MHz)", output, re.IGNORECASE)
     if cryst_match:
         crystal = cryst_match.group(1)
 
@@ -194,6 +195,8 @@ def parse_esptool_output(output: str, port: str) -> IdentificationResult:
         "Retrieved via non-destructive esptool flash-id query.",
         "SDK version is unavailable via ROM bootloader interrogation.",
     ]
+    if features:
+        notes.append(f"Silicon Features: {', '.join(features)}")
 
     return IdentificationResult(
         status=IdentificationStatus.SUCCESS,
@@ -214,10 +217,24 @@ def parse_esptool_output(output: str, port: str) -> IdentificationResult:
     )
 
 
+def get_esptool_env() -> Dict[str, str]:
+    """Ensures vendor directory is in PYTHONPATH for subprocesses."""
+    import os
+    from pathlib import Path
+    env = os.environ.copy()
+    vendor_dir = Path(__file__).resolve().parent.parent.parent.parent / "vendor"
+    current_pp = env.get("PYTHONPATH", "")
+    if current_pp:
+        env["PYTHONPATH"] = f"{vendor_dir}:{current_pp}"
+    else:
+        env["PYTHONPATH"] = str(vendor_dir)
+    return env
+
+
 def identify_esp32_device(
     port: str,
     baudrate: int = 115200,
-    timeout_seconds: float = 3.0,
+    timeout_seconds: float = 10.0,
     force_mock: bool = False,
     mock_chip: str = "esp32",
 ) -> IdentificationResult:
@@ -258,7 +275,9 @@ def identify_esp32_device(
         "--baud",
         str(baudrate),
         "--connect-attempts",
-        "2",
+        "5",
+        "--before",
+        "default-reset",
         "--after",
         "no-reset",
         "flash-id",
@@ -271,6 +290,7 @@ def identify_esp32_device(
             stderr=subprocess.STDOUT,
             text=True,
             timeout=timeout_seconds,
+            env=get_esptool_env(),
             check=False,
         )
         return parse_esptool_output(proc.stdout, port)
@@ -280,7 +300,8 @@ def identify_esp32_device(
             port=port,
             warnings=[
                 f"Connection attempt to {port} timed out after {timeout_seconds} seconds. "
-                "The board did not respond to serial bootloader synchronization."
+                "The board did not respond to serial bootloader synchronization. "
+                "Tip: On ESP32 dev boards with CH340, press and hold the 'BOOT' button on the board while clicking Identify."
             ],
         )
     except PermissionError:
@@ -342,3 +363,101 @@ def persist_device_record(db: Session, result: IdentificationResult) -> Optional
     db.commit()
     db.refresh(device)
     return device
+
+
+def dump_esp32_flash(
+    port: str,
+    baudrate: int = 460800,
+    flash_size_bytes: int = 4 * 1024 * 1024,
+    output_path: Optional[str] = None,
+    timeout_seconds: float = 120.0,
+    force_mock: bool = False,
+) -> Tuple[bool, str, Optional[str]]:
+    """
+    Safely reads SPI flash contents from a connected ESP32 microcontroller into a binary file.
+    Uses non-destructive `read_flash` command from esptool.
+    Returns: (success: bool, message: str, output_file_path: Optional[str])
+    """
+    from pathlib import Path
+    import os
+
+    if not output_path:
+        from backend.app.config import UPLOADS_DIR
+        output_file = UPLOADS_DIR / f"dump_{port.replace('/', '_')}.bin"
+    else:
+        output_file = Path(output_path)
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # 1. Mock Mode for offline demonstrations & testing
+    if force_mock:
+        # Generate synthetic full flash dump with bootloader, partition table, and sample app
+        dump_size = max(flash_size_bytes, 0x10000)
+        synthetic = bytearray(b"\xFF" * dump_size)
+        # Bootloader magic at 0x1000
+        synthetic[0x1000] = 0xE9
+        synthetic[0x1001] = 0x01
+        # Partition table at 0x8000
+        import struct
+        synthetic[0x8000:0x8002] = struct.pack("<H", 0xAA50)
+        # Embed sample credentials in firmware segment
+        sample_payload = b'SSID="Lab_WiFi_Test"; wifi_password="SecureAdminPassword2026!"; http://api.device.local'
+        synthetic[0x9000 : 0x9000 + len(sample_payload)] = sample_payload
+        
+        with open(output_file, "wb") as f:
+            f.write(synthetic)
+        return True, "Simulated firmware dump generated successfully from mock ESP32.", str(output_file)
+
+    # 2. Physical device interrogation via esptool read-flash
+    size_hex = hex(flash_size_bytes)
+    last_err = ""
+    
+    # Try high-speed dump first, fallback to 115200 on error
+    for current_baud in [baudrate, 115200]:
+        cmd = [
+            sys.executable,
+            "-m",
+            "esptool",
+            "--port",
+            port,
+            "--baud",
+            str(current_baud),
+            "--connect-attempts",
+            "5",
+            "--before",
+            "default-reset",
+            "--after",
+            "hard_reset",
+            "read-flash",
+            "0x0",
+            size_hex,
+            str(output_file),
+        ]
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=timeout_seconds,
+                env=get_esptool_env(),
+                check=False,
+            )
+            if proc.returncode == 0 and output_file.is_file() and output_file.stat().st_size > 0:
+                return True, f"Successfully dumped {output_file.stat().st_size} bytes from {port}.", str(output_file)
+            last_err = proc.stdout.strip() if proc.stdout else "No output from esptool."
+            if "timed out" in proc.stdout.lower() or "failed to connect" in proc.stdout.lower():
+                if current_baud == 115200:
+                    return False, f"Failed to connect to ESP32 on {port}. Please press and hold the 'BOOT' button on the board while initiating the dump.", None
+            elif "permission denied" in proc.stdout.lower():
+                return False, f"Permission denied on {port}. Ensure user is in 'dialout' or 'nogroup' group (sudo usermod -aG dialout $USER).", None
+        except subprocess.TimeoutExpired:
+            if current_baud == 115200:
+                return False, f"Firmware dump timed out after {timeout_seconds} seconds.", None
+        except Exception as e:
+            return False, f"Error dumping flash: {e}", None
+
+    err_line = last_err.splitlines()[-1] if last_err else f"Failed to dump flash from {port}."
+    return False, f"Failed to dump flash from {port}: {err_line}", None
+

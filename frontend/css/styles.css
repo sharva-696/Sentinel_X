@@ -538,6 +538,74 @@ body {
     overflow-y: auto;
 }
 
+/* Faculty Demo Mode & Secret Highlight Badges */
+.secret-leak-badge {
+    display: inline-block;
+    background-color: #fee2e2;
+    color: #b91c1c;
+    border: 1px solid #ef4444;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-weight: 800;
+    font-family: var(--font-mono);
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.45);
+    letter-spacing: 0.5px;
+}
+
+.faculty-demo-switch {
+    background-color: #fff1f2;
+    border: 1px solid #fecdd3;
+    padding: 5px 12px;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+    user-select: none;
+}
+
+.faculty-demo-switch:hover {
+    background-color: #ffe4e6;
+    border-color: #fda4af;
+}
+
+.badge-red-pulse {
+    background-color: #ef4444;
+    color: #ffffff;
+    font-size: 9px;
+    font-weight: 800;
+    padding: 1px 5px;
+    border-radius: 9999px;
+    letter-spacing: 0.5px;
+}
+
+.btn-xs {
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 4px;
+    cursor: pointer;
+    line-height: 1.4;
+}
+
+.btn-outline-danger {
+    background: transparent;
+    border: 1px solid #ef4444;
+    color: #ef4444;
+}
+
+.btn-outline-danger:hover {
+    background: #fee2e2;
+}
+
+.btn-outline-secondary {
+    background: transparent;
+    border: 1px solid #94a3b8;
+    color: #cbd5e1;
+}
+
+.btn-outline-secondary:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #ffffff;
+}
+
 .f-detail-row {
     margin-top: 6px;
     font-size: 12.5px;

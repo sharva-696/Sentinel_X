@@ -28,9 +28,34 @@ class PortsResponse(BaseModel):
 class DeviceIdentifyRequest(BaseModel):
     port: str = Field(..., description="Serial port path e.g. /dev/ttyUSB0")
     baudrate: int = Field(115200, ge=9600, le=921600, description="Communication baudrate")
-    timeout_seconds: float = Field(3.0, ge=1.0, le=15.0, description="Timeout in seconds")
+    timeout_seconds: float = Field(10.0, ge=1.0, le=60.0, description="Timeout in seconds")
     force_mock: bool = Field(False, description="Set True to simulate device interrogation for demonstration")
+    mock: Optional[bool] = None
     mock_chip: str = Field("esp32", description="Synthetic chip profile: esp32, esp32-s3, esp32-c3")
+
+    def model_post_init(self, __context):
+        if self.mock is not None:
+            self.force_mock = self.mock
+
+
+class DeviceDumpRequest(BaseModel):
+    port: str = Field(..., description="Serial port path e.g. /dev/ttyUSB0")
+    baudrate: int = Field(460800, ge=9600, le=2000000, description="Dump baudrate")
+    flash_size_bytes: int = Field(4 * 1024 * 1024, ge=65536, le=32 * 1024 * 1024, description="Flash capacity to dump in bytes")
+    timeout_seconds: float = Field(180.0, ge=5.0, le=600.0, description="Timeout in seconds for flash dumping")
+    force_mock: bool = Field(False, description="Simulate flash dump for testing")
+    mock: Optional[bool] = None
+    device_id: Optional[int] = None
+
+    def model_post_init(self, __context):
+        if self.mock is not None:
+            self.force_mock = self.mock
+
+
+class DeviceDeleteResponse(BaseModel):
+    success: bool
+    message: str
+    deleted_id: int
 
 
 class DeviceIdentifyData(BaseModel):

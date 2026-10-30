@@ -370,3 +370,54 @@ def test_api_get_devices_list(client: TestClient):
     data = res.json()
     assert data["total_devices"] >= 1
     assert data["devices"][0]["port"] == "/dev/ttyUSB0"
+
+
+def test_api_delete_device(client: TestClient):
+    """Verifies deleting device from hardware registry."""
+    # Create device
+    post_res = client.post(
+        "/api/devices/identify",
+        json={"port": "/dev/ttyUSB0", "force_mock": True, "mock_chip": "esp32-s3"},
+    )
+    assert post_res.status_code == 200
+    device_id = post_res.json()["device_id"]
+    assert device_id is not None
+
+    # Verify device exists
+    get_res = client.get(f"/api/devices/{device_id}")
+    assert get_res.status_code == 200
+
+    # Delete device
+    del_res = client.delete(f"/api/devices/{device_id}")
+    assert del_res.status_code == 200
+    del_data = del_res.json()
+    assert del_data["success"] is True
+    assert del_data["deleted_id"] == device_id
+
+    # Verify 404 on subsequent get and delete
+    assert client.get(f"/api/devices/{device_id}").status_code == 404
+    assert client.delete(f"/api/devices/{device_id}").status_code == 404
+
+
+def test_api_dump_firmware_mock(client: TestClient):
+    """Verifies dumping flash memory and automatic vulnerability assessment in mock mode."""
+    payload = {
+        "port": "/dev/ttyUSB0",
+        "baudrate": 460800,
+        "flash_size_bytes": 4194304,
+        "force_mock": True,
+    }
+    res = client.post("/api/devices/dump-firmware", json=payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert "assessment_id" in data
+    assert data["status"] == "COMPLETED"
+    assert data["image_type"] in ("APP_BINARY", "RAW_BINARY", "FLASH_DUMP", "FULL_FLASH_DUMP")
+    assert data["file_size_bytes"] == 4194304
+
+    # Verify persisted in database
+    assessment_id = data["assessment_id"]
+    get_res = client.get(f"/api/assessments/{assessment_id}")
+    assert get_res.status_code == 200
+    assert get_res.json()["id"] == assessment_id
+

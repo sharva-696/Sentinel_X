@@ -19,38 +19,45 @@ document.addEventListener('DOMContentLoaded', () => {
     // 1. Initialize Navigation
     initNav(navContainer);
 
+    let currentRenderedKey = null;
+
     // 2. Route Dispatcher
     const dispatchRoute = () => {
         const route = state.state.currentRoute;
         const selectedId = state.state.selectedAssessmentId;
+        const targetKey = `${route}:${selectedId || ''}`;
+
+        if (targetKey === currentRenderedKey) {
+            return;
+        }
+        currentRenderedKey = targetKey;
 
         // Clean current view container
         mainContent.innerHTML = '';
         window.scrollTo({ top: 0, behavior: 'instant' });
 
+        const targetHash = route === 'detail' && selectedId ? `#detail/${selectedId}` : `#${route}`;
+        if (window.location.hash !== targetHash) {
+            history.replaceState(null, '', targetHash);
+        }
+
         switch (route) {
             case 'overview':
-                window.location.hash = '#overview';
                 renderOverview(mainContent);
                 break;
             case 'analyze':
-                window.location.hash = '#analyze';
                 renderAnalyze(mainContent);
                 break;
             case 'history':
-                window.location.hash = '#history';
                 renderHistory(mainContent);
                 break;
             case 'detail':
-                window.location.hash = selectedId ? `#detail/${selectedId}` : '#history';
                 renderDetail(mainContent, selectedId);
                 break;
             case 'devices':
-                window.location.hash = '#devices';
                 renderDevices(mainContent);
                 break;
             default:
-                window.location.hash = '#overview';
                 renderOverview(mainContent);
         }
     };

@@ -26,8 +26,8 @@ def calculate_shannon_entropy(data_str: str) -> float:
 
 
 def scan_for_secrets(
-    extracted_strings: List[Dict[str, Any]],
-    raw_data: bytes,
+    extracted_strings: List[Any],
+    raw_data: bytes = b"",
     assessment_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
@@ -40,8 +40,16 @@ def scan_for_secrets(
     # Raw matches dictionary keyed by (rule_id, sanitized_match, identity_hash) to deduplicate genuine equivalents
     dedup_map: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
 
-    # 1. Scan extracted printable strings
+    # Normalize extracted_strings if passed as tuples (value, offset) or dicts
+    normalized_strings: List[Dict[str, Any]] = []
     for item in extracted_strings:
+        if isinstance(item, tuple) and len(item) == 2:
+            normalized_strings.append({"value": str(item[0]), "offset": int(item[1])})
+        elif isinstance(item, dict):
+            normalized_strings.append(item)
+
+    # 1. Scan extracted printable strings
+    for item in normalized_strings:
         val = item["value"]
         offset = item["offset"]
 
@@ -60,7 +68,7 @@ def scan_for_secrets(
 
             # Identify the underlying secret token to distinguish distinct credentials
             # without exposing raw secrets in the fingerprint or finding dictionary
-            secret_token = match.group(1) if match.groups() else matched_text
+            secret_token = next((g for g in match.groups() if g is not None), matched_text)
             identity_hash = hashlib.sha256(secret_token.strip().encode("utf-8", errors="replace")).hexdigest()[:16]
 
             sanitized_snippet = sanitize_evidence(val)
@@ -80,6 +88,8 @@ def scan_for_secrets(
                     "additional_offsets": [],
                     "section": None,
                     "evidence_masked": sanitized_snippet,
+                    "evidence_raw": val,
+                    "secret_token": secret_token,
                     "raw_occurrences": 1,
                     "identity_hash": identity_hash,
                     "rationale": rule["rationale"],
@@ -124,6 +134,8 @@ def scan_for_secrets(
                     "additional_offsets": [],
                     "section": None,
                     "evidence_masked": sanitized_snippet,
+                    "evidence_raw": snippet,
+                    "secret_token": "[REDACTED PRIVATE KEY MATERIAL]",
                     "raw_occurrences": 1,
                     "identity_hash": p_identity,
                     "rationale": pem_rule["rationale"],
@@ -137,5 +149,62 @@ def scan_for_secrets(
                 existing["raw_occurrences"] += 1
                 if p_offset not in existing["additional_offsets"] and p_offset != existing["byte_offset"]:
                     existing["additional_offsets"].append(p_offset)
+
+    # 3. Direct Raw Binary Scanning for Passwords and Cloud Tokens
+    # Guarantees detection across the entire flash dump even beyond string truncation limits
+    raw_scan_rules = [r for r in DETECTION_RULES if r["rule_id"] in ["SEC-WIFI-001", "SEC-PWD-001", "SEC-CLOUD-001", "SEC-CLOUD-002"]]
+    for rule in raw_scan_rules:
+        try:
+            pattern_bytes = re.compile(rule["pattern"].pattern.encode("ascii", "ignore"), rule["pattern"].flags)
+            for m in pattern_bytes.finditer(raw_data):
+                m_offset = f"0x{m.start():06x}"
+                # Context snippet around the match
+                start_ctx = max(0, m.start() - 10)
+                end_ctx = min(len(raw_data), m.end() + 25)
+                raw_snippet = raw_data[start_ctx:end_ctx].decode("ascii", errors="replace").strip()
+                
+                matched_raw_text = m.group(0).decode("ascii", errors="replace")
+                if rule["min_entropy"] > 0:
+                    ent = calculate_shannon_entropy(matched_raw_text)
+                    if ent < rule["min_entropy"]:
+                        continue
+
+                secret_group = next((g for g in m.groups() if g is not None), None)
+                secret_token = secret_group.decode("ascii", errors="replace") if secret_group is not None else matched_raw_text
+                identity_hash = hashlib.sha256(secret_token.strip().encode("utf-8", errors="replace")).hexdigest()[:16]
+                sanitized_snippet = sanitize_evidence(raw_snippet)
+                key = (rule["rule_id"], sanitized_snippet, identity_hash)
+
+                if key not in dedup_map:
+                    dedup_map[key] = {
+                        "id": str(uuid.uuid4()),
+                        "assessment_id": assessment_id,
+                        "rule_id": rule["rule_id"],
+                        "title": rule["title"],
+                        "category": rule["category"],
+                        "severity": rule["severity"],
+                        "confidence": rule["confidence"],
+                        "detection_method": f"{rule['detection_method']} (Raw Binary Scan)",
+                        "byte_offset": m_offset,
+                        "additional_offsets": [],
+                        "section": None,
+                        "evidence_masked": sanitized_snippet,
+                        "evidence_raw": raw_snippet,
+                        "secret_token": secret_token,
+                        "raw_occurrences": 1,
+                        "identity_hash": identity_hash,
+                        "rationale": rule["rationale"],
+                        "false_positive_cases": rule["false_positive_cases"],
+                        "remediation": rule["remediation"],
+                        "verification_limitations": rule["verification_limitations"],
+                        "is_potential": rule["is_potential"],
+                    }
+                else:
+                    existing = dedup_map[key]
+                    existing["raw_occurrences"] += 1
+                    if m_offset not in existing["additional_offsets"] and m_offset != existing["byte_offset"]:
+                        existing["additional_offsets"].append(m_offset)
+        except Exception:
+            continue
 
     return list(dedup_map.values())

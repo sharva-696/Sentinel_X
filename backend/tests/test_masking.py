@@ -45,3 +45,13 @@ def test_sanitize_evidence_aws():
     assert "AKIA1234567890ABCDEF" not in sanitized
     assert "AKIA" in sanitized
     assert "EF" in sanitized
+
+
+def test_sanitize_evidence_unquoted_pw_and_softap():
+    evidence = '>>> Connect to Wi-Fi "SentinelRT-Control" (pw: sentinel123) and open http://192.168.4.1/ <<<'
+    sanitized = sanitize_evidence(evidence)
+    assert "sentinel123" not in sanitized
+    assert '(pw: ***********)' in sanitized
+    assert 'SentinelRT-Control' in sanitized
+    assert 'http://192.168.4.1/' in sanitized
+

@@ -441,7 +441,7 @@ def test_risk_scoring_meaningful_n_and_dampening_tradeoff():
         "confidence": "Medium",
         "raw_occurrences": 10,
     }
-    score_single, rating_single, breakdown_single = calculate_risk_score([finding_10_offsets])
+    score_single, rating_single, breakdown_single = calculate_risk_score([finding_10_offsets], enforce_severity_floor=False)
     # Base weight (High) = 7, Conf (Medium) = 0.8
     # N = 10 -> dampening multiplier = 1.0 + (0.2 * 5) = 2.0
     # Expected points = 7 * 0.8 * 2.0 = 11.2 -> rounded to 11
@@ -466,7 +466,7 @@ def test_risk_scoring_meaningful_n_and_dampening_tradeoff():
         "confidence": "Medium",
         "raw_occurrences": 1,
     }
-    score_two, rating_two, breakdown_two = calculate_risk_score([distinct_finding_1, distinct_finding_2])
+    score_two, rating_two, breakdown_two = calculate_risk_score([distinct_finding_1, distinct_finding_2], enforce_severity_floor=False)
     # Each: 7 * 0.8 * 1.0 = 5.6 -> Total = 5.6 + 5.6 = 11.2 -> rounded to 11
     assert score_two == 11
     assert len(breakdown_two["finding_breakdown"]) == 2

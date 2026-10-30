@@ -14,13 +14,17 @@ from backend.app.schemas.device import (
     DeviceIdentifyData,
     DeviceRecordResponse,
     DeviceListResponse,
+    DeviceDumpRequest,
+    DeviceDeleteResponse,
 )
 from backend.app.modules.hardware.serial_discovery import discover_serial_ports
 from backend.app.modules.hardware.esp32_identification import (
     identify_esp32_device,
     persist_device_record,
+    dump_esp32_flash,
     IdentificationStatus,
 )
+from backend.app.modules.analysis.engine import analyze_firmware_bytes, persist_analysis_record
 
 logger = logging.getLogger(__name__)
 
@@ -186,3 +190,73 @@ def get_device(device_id: int, db: Session = Depends(get_db)):
         notes=device.notes,
         created_at=device.created_at,
     )
+
+
+@router.delete("/api/devices/{device_id}", response_model=DeviceDeleteResponse)
+def delete_device(device_id: int, db: Session = Depends(get_db)):
+    """Deletes an ESP32 hardware device record from local registry."""
+    device = db.query(DeviceRecord).filter(DeviceRecord.id == device_id).first()
+    if not device:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Device record with ID {device_id} not found.",
+        )
+    db.delete(device)
+    db.commit()
+    return DeviceDeleteResponse(
+        success=True,
+        message=f"Device record #{device_id} deleted successfully.",
+        deleted_id=device_id,
+    )
+
+
+@router.post("/api/devices/dump-firmware", status_code=status.HTTP_200_OK)
+@router.post("/api/device/dump-firmware", status_code=status.HTTP_200_OK)
+def dump_device_firmware(req: DeviceDumpRequest, db: Session = Depends(get_db)):
+    """
+    Safely dumps SPI flash memory from a connected ESP32 board over serial,
+    then automatically runs a complete static vulnerability analysis on the dumped binary.
+    """
+    validate_port_string(req.port)
+
+    # Optional port presence verification
+    if not req.force_mock:
+        discovered = discover_serial_ports()
+        available_ports = [p.device for p in discovered]
+        if available_ports and req.port not in available_ports:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Port {req.port} not found among active system serial ports.",
+            )
+
+    success, msg, dump_path = dump_esp32_flash(
+        port=req.port,
+        baudrate=req.baudrate,
+        flash_size_bytes=req.flash_size_bytes,
+        timeout_seconds=req.timeout_seconds,
+        force_mock=req.force_mock,
+    )
+
+    if not success or not dump_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=msg,
+        )
+
+    try:
+        with open(dump_path, "rb") as f:
+            file_bytes = f.read()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to read dumped firmware artifact: {e}",
+        )
+
+    clean_name = f"dump_{req.port.replace('/', '_')}.bin"
+    analysis_result = analyze_firmware_bytes(file_bytes, original_filename=clean_name)
+    if req.device_id:
+        analysis_result["device_id"] = req.device_id
+
+    persist_analysis_record(db, analysis_result)
+    return analysis_result
+

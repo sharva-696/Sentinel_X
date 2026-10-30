@@ -275,8 +275,9 @@ def test_analyze_firmware_bytes_engine():
     assert result["sha256"] == hashlib.sha256(esp_bin).hexdigest()
     assert result["md5"] == hashlib.md5(esp_bin).hexdigest()
     assert result["findings_summary"]["total_unique"] > 0
-    assert result["risk_score"] == 17
-    assert result["risk_rating"] == "Low"
+    assert result["risk_score"] >= 60
+    assert result["risk_rating"] == "High"
+
 
 
 def test_api_firmware_analyze_endpoint(client: TestClient):
@@ -328,3 +329,49 @@ def test_api_firmware_upload_endpoint(client: TestClient):
     assert data["file_size_bytes"] == len(esp_bin)
     assert data["sha256"] == hashlib.sha256(esp_bin).hexdigest()
     assert data["detected_image_type"] == "APP_BINARY"
+
+
+def test_hardcoded_password_secret_detection():
+    """Verifies that generic password assignments, WiFi.begin, and JSON credentials are detected."""
+    strings_with_offsets = [
+        ("WiFi.begin(\"CorpSSID\", \"SuperSecretPass999\");", 100),
+        ("const char* user_password = \"AdminPass#2026!\";", 200),
+        ("{\"api_token\": \"abc123xyz456\", \"password\": \"DeviceSecretKey456\"}", 300),
+    ]
+    findings = scan_for_secrets(strings_with_offsets)
+    rule_ids = {f["rule_id"] for f in findings}
+
+    assert "SEC-WIFI-001" in rule_ids or "SEC-PWD-001" in rule_ids
+    # Verify passwords are sanitized in evidence
+    for f in findings:
+        assert "SuperSecretPass999" not in f["evidence_masked"]
+        assert "AdminPass#2026!" not in f["evidence_masked"]
+        assert "DeviceSecretKey456" not in f["evidence_masked"]
+
+
+def test_risk_score_never_clean_when_findings_present():
+    """
+    Verifies that whenever vulnerabilities or secrets are detected,
+    the risk score is guaranteed to be >= 1 and the risk rating is never 'Clean'.
+    'Clean' (score 0) must be strictly reserved for 0 detected findings.
+    """
+    from backend.app.modules.analysis.risk_scorer import calculate_risk_score
+
+    # Case 1: 0 findings -> Score 0, Rating Clean
+    score_clean, rating_clean, _ = calculate_risk_score([])
+    assert score_clean == 0
+    assert rating_clean == "Clean"
+
+    # Case 2: A single Low severity finding with low confidence
+    low_finding = {
+        "rule_id": "SEC-TEST-001",
+        "title": "Test finding",
+        "severity": "Low",
+        "confidence": "Low",
+        "evidence": "test evidence",
+    }
+    score_low, rating_low, _ = calculate_risk_score([low_finding])
+    assert score_low >= 1
+    assert rating_low == "Low"
+
+

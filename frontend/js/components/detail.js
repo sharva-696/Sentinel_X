@@ -126,6 +126,12 @@ export async function renderDetail(container, assessmentId) {
                             <button class="filter-pill" data-sev="Medium">Medium</button>
                             <button class="filter-pill" data-sev="Low">Low</button>
                         </div>
+                        <label class="faculty-demo-switch flex-center gap-2" title="Reveal raw passwords and credentials with red highlight for faculty demonstration">
+                            <input type="checkbox" id="faculty-demo-toggle" style="accent-color: #ef4444; width: 15px; height: 15px; cursor: pointer;" />
+                            <span class="text-xs font-bold text-danger flex-center gap-1">
+                                🛡️ Faculty Demo Mode <span class="badge-red-pulse">LIVE</span>
+                            </span>
+                        </label>
                     </div>
                 </div>
 
@@ -250,23 +256,65 @@ export async function renderDetail(container, assessmentId) {
             const partBox = container.querySelector('#detail-partitions-box');
             const partTbody = container.querySelector('#detail-partitions-tbody');
             partBox.style.display = 'block';
-            partTbody.innerHTML = assessment.image_metadata.partitions.map(p => `
-                <tr>
-                    <td><code>${escapeHtml(p.label)}</code></td>
-                    <td>${escapeHtml(p.type)}</td>
-                    <td>${escapeHtml(p.subtype)}</td>
-                    <td><code>0x${Number(p.offset).toString(16).padStart(6, '0')}</code></td>
-                    <td>${Math.round(p.size_bytes / 1024)} KB</td>
-                </tr>
-            `).join('');
+            partTbody.innerHTML = assessment.image_metadata.partitions.map(p => {
+                const offsetHex = typeof p.offset === 'string' && p.offset.startsWith('0x') 
+                    ? p.offset 
+                    : `0x${Number(p.offset || p.offset_dec || 0).toString(16).padStart(6, '0')}`;
+                const sizeVal = p.size_bytes ?? p.size_dec ?? (typeof p.size === 'string' && p.size.startsWith('0x') ? parseInt(p.size, 16) : Number(p.size || 0));
+                const sizeKb = !isNaN(sizeVal) && sizeVal > 0 ? `${Math.round(sizeVal / 1024)} KB` : '0 KB';
+                const labelStr = p.label ? String(p.label).replace(/[^\x20-\x7E]/g, '?') : 'unnamed';
+                return `
+                    <tr>
+                        <td><code>${escapeHtml(labelStr)}</code></td>
+                        <td>${escapeHtml(p.type || 'N/A')}</td>
+                        <td>${escapeHtml(p.subtype || 'N/A')}</td>
+                        <td><code>${escapeHtml(offsetHex)}</code></td>
+                        <td>${escapeHtml(sizeKb)}</td>
+                    </tr>
+                `;
+            }).join('');
         }
 
         // Findings Rendering & Filtering Logic
         let currentSeverityFilter = '';
         let currentSearchQuery = '';
+        let demoModeActive = false;
+        const manuallyToggled = new Set();
 
         const findingsContainer = container.querySelector('#findings-container');
         const findingsEmpty = container.querySelector('#findings-empty');
+
+        function renderEvidenceSnippet(f, isRevealed) {
+            const masked = (f.evidence && f.evidence.snippet_masked) || f.evidence_masked || '[REDACTED]';
+            const raw = (f.evidence && f.evidence.snippet_raw) || f.evidence_raw;
+            const token = (f.evidence && f.evidence.secret_token) || f.secret_token;
+
+            if (isRevealed && raw) {
+                if (token && raw.includes(token)) {
+                    const idx = raw.indexOf(token);
+                    const before = escapeHtml(raw.substring(0, idx));
+                    const highToken = `<span class="secret-leak-badge">${escapeHtml(token)}</span>`;
+                    const after = escapeHtml(raw.substring(idx + token.length));
+                    return {
+                        html: `${before}${highToken}${after}`,
+                        label: 'Extracted Secret Context (Live Demonstration):',
+                        revealed: true,
+                    };
+                } else {
+                    return {
+                        html: `<span class="secret-leak-badge">${escapeHtml(raw)}</span>`,
+                        label: 'Extracted Secret Context (Live Demonstration):',
+                        revealed: true,
+                    };
+                }
+            } else {
+                return {
+                    html: escapeHtml(masked),
+                    label: 'Sanitized Evidence Context (Report Format):',
+                    revealed: false,
+                };
+            }
+        }
 
         const renderFindingsList = () => {
             const filtered = findings.filter(f => {
@@ -328,17 +376,44 @@ export async function renderDetail(container, assessmentId) {
                     card.appendChild(offsetDiv);
                 }
 
-                // Evidence Snippet (Safely injected as text to prevent XSS!)
+                // Evidence Snippet with Live Demo Reveal & Red Highlight
                 const evidenceBox = document.createElement('div');
                 evidenceBox.className = 'evidence-box mt-3';
+
+                const isRevealed = demoModeActive ? !manuallyToggled.has(f.id) : manuallyToggled.has(f.id);
+                const snippetData = renderEvidenceSnippet(f, isRevealed);
+                const hasRawData = Boolean((f.evidence && f.evidence.snippet_raw) || f.evidence_raw);
+
+                const headerRow = document.createElement('div');
+                headerRow.className = 'flex-between mb-2 flex-wrap gap-2';
+
                 const evidenceLabel = document.createElement('div');
                 evidenceLabel.className = 'evidence-label';
-                evidenceLabel.textContent = 'Sanitized Evidence Context:';
+                evidenceLabel.textContent = snippetData.label;
+                headerRow.appendChild(evidenceLabel);
+
+                if (hasRawData || demoModeActive) {
+                    const toggleBtn = document.createElement('button');
+                    toggleBtn.className = isRevealed ? 'btn btn-xs btn-outline-secondary' : 'btn btn-xs btn-outline-danger';
+                    toggleBtn.innerHTML = isRevealed ? '🙈 Mask' : '👁️ Reveal';
+                    toggleBtn.title = isRevealed ? 'Mask secret token' : 'Reveal raw secret with red highlight';
+                    toggleBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        if (manuallyToggled.has(f.id)) {
+                            manuallyToggled.delete(f.id);
+                        } else {
+                            manuallyToggled.add(f.id);
+                        }
+                        renderFindingsList();
+                    });
+                    headerRow.appendChild(toggleBtn);
+                }
+
                 const pre = document.createElement('pre');
                 pre.className = 'evidence-code';
-                // Strictly use textContent:
-                pre.textContent = (f.evidence && f.evidence.snippet_masked) || f.evidence_masked || '[REDACTED]';
-                evidenceBox.appendChild(evidenceLabel);
+                pre.innerHTML = snippetData.html;
+
+                evidenceBox.appendChild(headerRow);
                 evidenceBox.appendChild(pre);
                 card.appendChild(evidenceBox);
 
@@ -362,6 +437,30 @@ export async function renderDetail(container, assessmentId) {
                 findingsContainer.appendChild(card);
             });
         };
+
+        // Faculty Demo Mode toggle listener
+        const demoToggle = container.querySelector('#faculty-demo-toggle');
+        if (demoToggle) {
+            demoToggle.addEventListener('change', async (e) => {
+                demoModeActive = e.target.checked;
+                manuallyToggled.clear();
+
+                // If demo mode turned ON and we don't have snippet_raw yet, fetch from backend with reveal_secrets=true
+                const needsFetch = demoModeActive && findings.some(f => !((f.evidence && f.evidence.snippet_raw) || f.evidence_raw));
+                if (needsFetch) {
+                    try {
+                        const fresh = await api.getAssessment(assessmentId, { revealSecrets: true });
+                        if (fresh && fresh.findings) {
+                            findings.length = 0;
+                            findings.push(...fresh.findings);
+                        }
+                    } catch (err) {
+                        console.error('Failed to load raw credentials for demo mode:', err);
+                    }
+                }
+                renderFindingsList();
+            });
+        }
 
         // Filter pills event listeners
         container.querySelectorAll('.filter-pill').forEach(pill => {

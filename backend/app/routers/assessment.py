@@ -33,7 +33,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/assessments", tags=["Assessment Management"])
 
 
-def build_finding_response(f: FindingRecord) -> FindingResponse:
+def build_finding_response(f: FindingRecord, reveal_secrets: bool = False) -> FindingResponse:
+    snippet_raw = f.evidence_raw if reveal_secrets else None
+    secret_token = f.secret_token if reveal_secrets else None
     return FindingResponse(
         id=f.id,
         assessment_id=f.assessment_id,
@@ -48,6 +50,8 @@ def build_finding_response(f: FindingRecord) -> FindingResponse:
             additional_offsets=f.additional_offsets or [],
             section=f.section,
             snippet_masked=f.evidence_masked,
+            snippet_raw=snippet_raw,
+            secret_token=secret_token,
             occurrences_count=f.raw_occurrences,
         ),
         fingerprint=f.fingerprint,
@@ -127,7 +131,11 @@ def list_assessments(
 
 
 @router.get("/{assessment_id}", response_model=AssessmentDetailResponse)
-def get_assessment(assessment_id: str, db: Session = Depends(get_db)):
+def get_assessment(
+    assessment_id: str,
+    reveal_secrets: bool = Query(False, description="Reveal unmasked secret tokens for authorized demo/auditor mode"),
+    db: Session = Depends(get_db),
+):
     """Retrieves full details for an assessment including normalized findings and risk score breakdown."""
     assessment = db.query(AssessmentRecord).filter(AssessmentRecord.id == assessment_id).first()
     if not assessment:
@@ -137,7 +145,7 @@ def get_assessment(assessment_id: str, db: Session = Depends(get_db)):
         )
 
     summary = build_findings_summary(assessment.findings)
-    findings_responses = [build_finding_response(f) for f in assessment.findings]
+    findings_responses = [build_finding_response(f, reveal_secrets=reveal_secrets) for f in assessment.findings]
 
     return AssessmentDetailResponse(
         id=assessment.id,
@@ -164,6 +172,7 @@ def get_assessment_findings(
     assessment_id: str,
     severity: Optional[str] = Query(None, description="Filter by severity: Critical, High, Medium, Low, Informational"),
     category: Optional[str] = Query(None, description="Filter by category"),
+    reveal_secrets: bool = Query(False, description="Reveal unmasked secret tokens for authorized demo/auditor mode"),
     db: Session = Depends(get_db),
 ):
     """Retrieves filtered findings for a specific assessment."""
@@ -181,7 +190,7 @@ def get_assessment_findings(
         query = query.filter(FindingRecord.category.ilike(f"%{category}%"))
 
     findings = query.all()
-    results = [build_finding_response(f) for f in findings]
+    results = [build_finding_response(f, reveal_secrets=reveal_secrets) for f in findings]
 
     return FindingsListResponse(
         assessment_id=assessment_id,

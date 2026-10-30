@@ -61,6 +61,8 @@ class NormalizedFinding(BaseModel):
     additional_offsets: List[str] = Field(default_factory=list)
     section: Optional[str] = None
     evidence_masked: str
+    evidence_raw: Optional[str] = None
+    secret_token: Optional[str] = None
     raw_occurrences: int = 1
     identity_hash: Optional[str] = None
     fingerprint: str
@@ -93,8 +95,8 @@ class NormalizedFinding(BaseModel):
                     return item
         return FindingConfidence.MEDIUM
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
+    def to_dict(self, include_raw: bool = False) -> Dict[str, Any]:
+        data = {
             "id": self.id,
             "assessment_id": self.assessment_id,
             "rule_id": self.rule_id,
@@ -117,6 +119,10 @@ class NormalizedFinding(BaseModel):
             "is_potential": self.is_potential,
             "created_at": self.created_at.isoformat(),
         }
+        if include_raw:
+            data["evidence_raw"] = self.evidence_raw
+            data["secret_token"] = self.secret_token
+        return data
 
 
 def normalize_finding(raw: Dict[str, Any], assessment_id: str) -> NormalizedFinding:
@@ -160,6 +166,8 @@ def normalize_finding(raw: Dict[str, Any], assessment_id: str) -> NormalizedFind
         additional_offsets=list(additional_offsets),
         section=raw.get("section"),
         evidence_masked=sanitized_evidence,
+        evidence_raw=raw.get("evidence_raw"),
+        secret_token=raw.get("secret_token"),
         raw_occurrences=occurrences,
         identity_hash=identity_hash,
         fingerprint=fingerprint,
@@ -200,6 +208,8 @@ def deduplicate_findings(findings: List[NormalizedFinding]) -> List[NormalizedFi
                 additional_offsets=list(f.additional_offsets),
                 section=f.section,
                 evidence_masked=f.evidence_masked,
+                evidence_raw=f.evidence_raw,
+                secret_token=f.secret_token,
                 raw_occurrences=f.raw_occurrences,
                 identity_hash=f.identity_hash,
                 fingerprint=f.fingerprint,
@@ -213,6 +223,10 @@ def deduplicate_findings(findings: List[NormalizedFinding]) -> List[NormalizedFi
         else:
             existing = dedup_map[fp]
             existing.raw_occurrences += f.raw_occurrences
+            if not existing.evidence_raw and f.evidence_raw:
+                existing.evidence_raw = f.evidence_raw
+            if not existing.secret_token and f.secret_token:
+                existing.secret_token = f.secret_token
 
             # Collect offsets only for genuinely equivalent findings
             if f.byte_offset and f.byte_offset != existing.byte_offset:
@@ -221,8 +235,6 @@ def deduplicate_findings(findings: List[NormalizedFinding]) -> List[NormalizedFi
 
             for extra in f.additional_offsets:
                 if extra and extra != existing.byte_offset and extra not in existing.additional_offsets:
-                    existing.additional_offsets.append(extra)
-            # Notice: existing.confidence is NOT elevated by occurrence counts or duplicates.
                     existing.additional_offsets.append(extra)
 
     return list(dedup_map.values())

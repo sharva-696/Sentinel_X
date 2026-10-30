@@ -27,9 +27,19 @@ def determine_rating_band(score: int) -> str:
     return "Critical"
 
 
+SEVERITY_FLOORS = {
+    "Critical": (80, "Critical"),
+    "High": (60, "High"),
+    "Medium": (35, "Moderate"),
+    "Low": (5, "Low"),
+    "Informational": (0, "Clean"),
+}
+
+
 def calculate_risk_score(
     findings: List[Dict[str, Any]],
     weights: Optional[ScoringWeights] = None,
+    enforce_severity_floor: bool = True,
 ) -> Tuple[int, str, Dict[str, Any]]:
     """
     Computes an explainable, deterministic risk score from security findings.
@@ -50,6 +60,10 @@ def calculate_risk_score(
       exposures and contribute independently to the composite score.
     - The composite score is capped strictly at 100 with standardized rating bands:
       Clean (0), Low (1-19), Moderate (20-49), High (50-79), Critical (80-100).
+    - Severity Floor Policy: If vulnerabilities are present, the baseline risk score is anchored
+      to the severity of the most severe finding (>=80 for Critical, >=60 for High, >=35 for Medium,
+      >=5 for Low), ensuring critical and high vulnerabilities are never downplayed as 'Low' or 'Moderate' risk.
+      Additional findings and occurrences contribute incremental points on top of the baseline, capped at 100.
     - An empty assessment produces a score of 0 and the 'Clean' rating band.
     
     Returns:
@@ -101,13 +115,54 @@ def calculate_risk_score(
             "calculated_points": round(points, 2),
         })
 
-    final_score = min(round(raw_total_score), 100)
+    # Calculate raw score
+    raw_final = round(raw_total_score)
+    final_score = min(max(0, raw_final), 100)
+
+    # Determine highest severity level present in findings
+    severities = [f.get("severity", "Low") for f in findings]
+    max_severity = None
+    for s_level in ["Critical", "High", "Medium", "Low", "Informational"]:
+        if s_level in severities:
+            max_severity = s_level
+            break
+
+    severity_floor_applied = False
+    floor_score = 0
+    min_rating = "Clean"
+    if enforce_severity_floor and max_severity and max_severity in SEVERITY_FLOORS:
+        floor_score, min_rating = SEVERITY_FLOORS[max_severity]
+        
+        # Primary finding of max_severity contributes the baseline floor
+        max_sev_points = 0.0
+        for item in finding_breakdown:
+            if item.get("severity") == max_severity:
+                max_sev_points = max(max_sev_points, float(item.get("calculated_points", 0.0)))
+        
+        # Additional risk accumulated from other findings/occurrences beyond the primary finding
+        additional_points = max(0.0, raw_total_score - max_sev_points)
+        calculated_with_floor = floor_score + round(additional_points)
+        final_score = min(100, max(floor_score, calculated_with_floor))
+        if final_score >= floor_score and floor_score > raw_final:
+            severity_floor_applied = True
+    elif len(findings) > 0 and raw_total_score > 0:
+        final_score = max(1, final_score)
+
     rating = determine_rating_band(final_score)
+    # Guarantee rating band is not lower than severity floor
+    rating_ranks = {"Clean": 0, "Low": 1, "Moderate": 2, "High": 3, "Critical": 4}
+    if enforce_severity_floor and rating_ranks.get(rating, 0) < rating_ranks.get(min_rating, 0):
+        rating = min_rating
+    elif len(findings) > 0 and rating == "Clean":
+        rating = "Low"
 
     breakdown = {
         "raw_score": round(raw_total_score, 2),
         "capped_score": final_score,
         "rating": rating,
+        "severity_floor": floor_score if severity_floor_applied else None,
+        "severity_floor_applied": severity_floor_applied,
+        "max_severity_detected": max_severity,
         "findings_evaluated_count": len(findings),
         "finding_breakdown": finding_breakdown,
         "rule_breakdown": finding_breakdown,  # Backwards compatibility alias

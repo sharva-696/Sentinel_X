@@ -9,6 +9,8 @@ class FindingEvidence(BaseModel):
     additional_offsets: List[str] = Field(default_factory=list)
     section: Optional[str] = None
     snippet_masked: str
+    snippet_raw: Optional[str] = None
+    secret_token: Optional[str] = None
     occurrences_count: int = 1
 
 

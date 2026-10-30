@@ -83,7 +83,7 @@ export function initNav(container) {
         if (!badge) return;
         try {
             const health = await api.getHealth();
-            if (health.status === 'OK') {
+            if (health.status === 'OK' || health.status === 'healthy') {
                 badge.className = 'system-status status-healthy';
                 badge.querySelector('.status-text').textContent = 'Backend Online';
             } else {

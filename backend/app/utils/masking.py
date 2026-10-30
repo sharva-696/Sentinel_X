@@ -16,45 +16,48 @@ def mask_secret(value: str, prefix_len: int = 4, suffix_len: int = 2) -> str:
 
 def mask_wifi_credential(text: str) -> str:
     """
-    Masks password or passphrase in Wi-Fi connection strings across all ESP-IDF variants.
-    Matches: wifi_password, wifi_pass, wpa_passphrase, psk, wifi_sta_pwd, sta_pwd, ap_pwd, wifi_key.
+    Masks password or passphrase in Wi-Fi connection strings across all ESP-IDF and Arduino variants.
+    Matches: wifi_password, wifi_pass, wpa_passphrase, psk, wifi_sta_pwd, sta_pwd, ap_pwd, wifi_key, wifi_pw, ap_pw, sta_pw, WiFi.begin.
     Example: 'wifi_sta_pwd = "super_secret_pass"' -> 'wifi_sta_pwd = "*****************"'
     """
+    # Arduino / ESP-IDF WiFi.begin("SSID", "Password")
+    text = re.sub(
+        r'(?i)(WiFi\.begin\s*\(\s*["\'][^"\']+["\']\s*,\s*["\'])([^"\']+)(["\'])',
+        lambda m: f"{m.group(1)}{'*' * len(m.group(2))}{m.group(3)}",
+        text,
+    )
+
     pattern = (
-        r"(?i)(wifi_password|wifi_pass|wpa_passphrase|psk|wifi_sta_pwd|sta_pwd|ap_pwd|wifi_key)"
-        r"\s*([:=])\s*([\"']?)([^\s\"';,]+)([\"']?)"
+        r"(?i)([\"']?\b(?:wifi_password|wifi_pass|wpa_passphrase|psk|wifi_sta_pwd|sta_pwd|ap_pwd|wifi_key|wifi_pw|ap_pw|sta_pw)\b[\"']?"
+        r"\s*[:=]\s*[\"']?)([^\s\"';,{}()]+)([\"']?)"
     )
 
     def repl(m):
-        key = m.group(1)
-        sep = m.group(2)
-        quote_start = m.group(3)
-        val = m.group(4)
-        quote_end = m.group(5)
-        masked_val = "*" * len(val)
-        return f"{key} {sep} {quote_start}{masked_val}{quote_end}"
+        prefix = m.group(1)
+        val = m.group(2)
+        q_end = m.group(3)
+        return f"{prefix}{'*' * len(val)}{q_end}"
 
     return re.sub(pattern, repl, text)
 
 
 def mask_generic_credentials(text: str) -> str:
     """
-    Masks common password, token, or secret assignments in configuration strings.
+    Masks common password, token, or secret assignments in configuration strings and JSON objects.
     Example: 'password = "secret123"' -> 'password = "*********"'
+    Example: '{"password": "secret123"}' -> '{"password": "*********"}'
+    Example: '(pw: sentinel123)' -> '(pw: ***********)'
     """
     pattern = (
-        r"(?i)\b(password|passwd|secret_key|api_secret|client_secret)\b"
-        r"\s*([:=])\s*([\"']?)([^\s\"';,]+)([\"']?)"
+        r"(?i)([\"']?\b(?:password|passwd|passcode|user_password|admin_password|secret_key|api_secret|client_secret|root_pwd|pw|pwd)\b[\"']?"
+        r"\s*[:=]\s*[\"']?)([^\s\"';,{}()]+)([\"']?)"
     )
 
     def repl(m):
-        key = m.group(1)
-        sep = m.group(2)
-        quote_start = m.group(3)
-        val = m.group(4)
-        quote_end = m.group(5)
-        masked_val = "*" * len(val)
-        return f"{key} {sep} {quote_start}{masked_val}{quote_end}"
+        prefix = m.group(1)
+        val = m.group(2)
+        q_end = m.group(3)
+        return f"{prefix}{'*' * len(val)}{q_end}"
 
     return re.sub(pattern, repl, text)
 

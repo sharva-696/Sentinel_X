@@ -21,8 +21,9 @@ def safe_xml(val: Any) -> str:
     """Escapes user and firmware input for ReportLab's XML-based Paragraph parser."""
     if val is None:
         return ""
-    # saxutils escapes &, <, >. We also escape quotes if needed.
-    return saxutils.escape(str(val))
+    # Filter non-printable, control, or replacement unicode characters that standard PDF fonts cannot render
+    clean = "".join(c if (c.isprintable() and ord(c) < 128) or c in "\n\t" else "?" for c in str(val))
+    return saxutils.escape(clean)
 
 
 class NumberedCanvas(canvas.Canvas):
@@ -293,13 +294,44 @@ def generate_pdf_report(data: Dict[str, Any]) -> bytes:
             Paragraph("Flags", style_table_header),
         ]]
         for p in partitions:
+            raw_label = str(p.get("label") or "unnamed")
+            cleaned_label = "".join(c if c.isprintable() and ord(c) < 128 else "" for c in raw_label).strip() or "partition"
+
+            type_str = safe_xml(p.get("type", "unknown"))
+            subtype_str = safe_xml(p.get("subtype", "unknown"))
+
+            # Safe offset formatting
+            raw_offset = p.get("offset")
+            if isinstance(raw_offset, int):
+                offset_str = f"0x{raw_offset:06x}"
+            elif isinstance(raw_offset, str) and raw_offset.startswith("0x"):
+                offset_str = raw_offset
+            else:
+                try:
+                    offset_str = f"0x{int(raw_offset or p.get('offset_dec') or 0):06x}"
+                except Exception:
+                    offset_str = str(raw_offset or "0x000000")
+
+            # Safe size formatting
+            raw_size = p.get("size_bytes")
+            if raw_size is None:
+                raw_size = p.get("size_dec")
+            if isinstance(raw_size, str):
+                try:
+                    raw_size = int(raw_size, 16 if raw_size.startswith("0x") else 10)
+                except Exception:
+                    raw_size = 0
+            size_kb = (raw_size or 0) // 1024
+            size_str = f"{size_kb} KB"
+
+            flags_str = safe_xml(p.get("flags", "None"))
             part_data.append([
-                Paragraph(f"<code>{safe_xml(p.get('label'))}</code>", style_code),
-                Paragraph(safe_xml(p.get("type")), style_body),
-                Paragraph(safe_xml(p.get("subtype")), style_body),
-                Paragraph(f"<code>0x{p.get('offset', 0):06x}</code>", style_code),
-                Paragraph(f"{p.get('size_bytes', 0) // 1024} KB", style_body),
-                Paragraph(safe_xml(p.get("flags", "None")), style_body),
+                Paragraph(f"<code>{safe_xml(cleaned_label)}</code>", style_code),
+                Paragraph(type_str, style_body),
+                Paragraph(subtype_str, style_body),
+                Paragraph(f"<code>{offset_str}</code>", style_code),
+                Paragraph(size_str, style_body),
+                Paragraph(flags_str, style_body),
             ])
         part_table = Table(part_data, colWidths=[100, 80, 90, 90, 80, 100], repeatRows=1)
         part_table.setStyle(TableStyle([
