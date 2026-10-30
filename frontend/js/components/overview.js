@@ -68,7 +68,7 @@ export async function renderOverview(container) {
                                 <th>Detected Format</th>
                                 <th>Risk Score</th>
                                 <th>Severity Summary</th>
-                                <th>Date</th>
+                                <th>Date (IST)</th>
                                 <th class="text-right">Action</th>
                             </tr>
                         </thead>

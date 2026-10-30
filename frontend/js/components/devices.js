@@ -136,7 +136,7 @@ export async function renderDevices(container) {
                             <th>MAC Address</th>
                             <th>Flash (Size &amp; Vendor)</th>
                             <th>Crystal</th>
-                            <th>First Registered (UTC)</th>
+                            <th>First Registered (IST)</th>
                             <th class="text-right">Action</th>
                         </tr>
                     </thead>

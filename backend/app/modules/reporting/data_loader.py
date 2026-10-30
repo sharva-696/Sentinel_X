@@ -1,10 +1,20 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
 import html
 
 from backend.app.models.assessment import AssessmentRecord
 from backend.app.models.finding import FindingRecord
 from backend.app.models.device import DeviceRecord
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _format_ist(dt: Optional[datetime]) -> Optional[str]:
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST).strftime("%Y-%m-%d %H:%M:%S IST")
 
 
 SEVERITY_ORDER = {
@@ -57,7 +67,7 @@ def build_report_data(assessment: AssessmentRecord) -> Dict[str, Any]:
             "flash_speed": dev.flash_speed,
             "crystal_freq": dev.crystal_freq,
             "sdk_version": dev.sdk_version,
-            "created_at": dev.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") if dev.created_at else None,
+            "created_at": _format_ist(dev.created_at),
         }
 
     # 2. Sort and Normalize Findings
@@ -97,8 +107,8 @@ def build_report_data(assessment: AssessmentRecord) -> Dict[str, Any]:
         })
 
     # 3. Assessment Metadata & Hashes
-    created_str = assessment.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") if assessment.created_at else "Unknown"
-    completed_str = assessment.completed_at.strftime("%Y-%m-%d %H:%M:%S UTC") if assessment.completed_at else created_str
+    created_str = _format_ist(assessment.created_at) or "Unknown"
+    completed_str = _format_ist(assessment.completed_at) or created_str
 
     # 4. Partition metadata if extracted
     partitions: List[Dict[str, Any]] = []
@@ -113,7 +123,7 @@ def build_report_data(assessment: AssessmentRecord) -> Dict[str, Any]:
 
     return {
         "report_title": "Sentinel-X ESP32 Security Assessment Report",
-        "generated_at": now_utc.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "generated_at": _format_ist(now_utc),
         "assessment_id": assessment.id,
         "created_at": created_str,
         "completed_at": completed_str,

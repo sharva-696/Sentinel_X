@@ -92,14 +92,31 @@ export function formatBytes(bytes) {
 export function formatDate(isoStr) {
     if (!isoStr) return 'N/A';
     try {
-        const d = new Date(isoStr);
-        return d.toLocaleDateString(undefined, {
-            year: 'numeric',
-            month: 'short',
+        let s = String(isoStr).trim();
+        if (s.includes(' ') && !s.includes('T')) {
+            s = s.replace(' ', 'T');
+        }
+        // If string lacks timezone indicator (Z or +/-offset), treat as UTC
+        if (!s.endsWith('Z') && !/[+-]\d{2}:?\d{2}$/.test(s)) {
+            s += 'Z';
+        }
+        const d = new Date(s);
+        if (isNaN(d.getTime())) return isoStr;
+
+        // Format in Indian Standard Time (IST, Asia/Kolkata)
+        const datePart = d.toLocaleDateString('en-IN', {
+            timeZone: 'Asia/Kolkata',
             day: 'numeric',
+            month: 'short',
+            year: 'numeric'
+        });
+        const timePart = d.toLocaleTimeString('en-IN', {
+            timeZone: 'Asia/Kolkata',
             hour: '2-digit',
             minute: '2-digit',
+            hour12: true
         });
+        return `${datePart}, ${timePart.toLowerCase()}`;
     } catch {
         return isoStr;
     }

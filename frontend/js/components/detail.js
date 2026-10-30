@@ -249,7 +249,7 @@ export async function renderDetail(container, assessmentId) {
         // Hashes & Meta
         container.querySelector('#meta-sha256').textContent = assessment.sha256;
         container.querySelector('#meta-md5').textContent = assessment.md5;
-        container.querySelector('#meta-timestamp').textContent = `${formatDate(assessment.created_at)} (UTC)`;
+        container.querySelector('#meta-timestamp').textContent = `${formatDate(assessment.created_at)} (IST)`;
 
         // Partitions
         if (assessment.image_metadata && assessment.image_metadata.partitions && assessment.image_metadata.partitions.length > 0) {

@@ -47,7 +47,7 @@ export async function renderHistory(container) {
                             <th>File Size</th>
                             <th>Risk Score</th>
                             <th>Findings Summary</th>
-                            <th>Date (UTC)</th>
+                            <th>Date (IST)</th>
                             <th class="text-right">Actions</th>
                         </tr>
                     </thead>
